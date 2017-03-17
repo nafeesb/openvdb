@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -801,7 +801,12 @@ SOP_OpenVDBAdvectPoints::evalAdvectionParms(OP_Context& context, AdvectionParms&
     }
 
     evalString(str, "ptnGroup", 0, now);
+
+#if (UT_MAJOR_VERSION_INT >= 15)
+    parms.mPointGroup = parsePointGroups(str,GroupCreator(gdp));
+#else
     parms.mPointGroup = parsePointGroups(str, gdp);
+#endif
 
     if (!parms.mPointGroup && str.length() > 0) {
         addWarning(SOP_MESSAGE, "Point group not found");
@@ -837,6 +842,10 @@ SOP_OpenVDBAdvectPoints::evalAdvectionParms(OP_Context& context, AdvectionParms&
             addError(SOP_MESSAGE, "Missing velocity grid");
             return false;
         }
+        if (parms.mVelPrim->getStorageType() != UT_VDB_VEC3F) {
+            addError(SOP_MESSAGE, "Expected velocity grid to be of type Vec3f");
+            return false;
+        }
 
         // Check if the velocity grid uses a staggered representation.
         parms.mStaggered =
@@ -846,7 +855,7 @@ SOP_OpenVDBAdvectPoints::evalAdvectionParms(OP_Context& context, AdvectionParms&
         parms.mSteps    = evalInt("steps", 0, now);
         // The underlying code will accumulate, so to make it substeps
         // we need to divide out.
-        parms.mTimeStep /= (float) parms.mSteps;
+        parms.mTimeStep /= static_cast<float>(parms.mSteps);
         parms.mStreamlines  = bool(evalInt("outputStreamlines", 0, now));
 
         evalString(str, "integration", 0, now);
@@ -880,6 +889,10 @@ SOP_OpenVDBAdvectPoints::evalAdvectionParms(OP_Context& context, AdvectionParms&
             addError(SOP_MESSAGE, "Missing closest point grid");
             return false;
         }
+        if (parms.mCptPrim->getStorageType() != UT_VDB_VEC3F) {
+            addError(SOP_MESSAGE, "Expected closest point grid to be of type Vec3f");
+            return false;
+        }
 
         parms.mIterations = evalInt("cptIterations", 0, now);
     }
@@ -887,6 +900,6 @@ SOP_OpenVDBAdvectPoints::evalAdvectionParms(OP_Context& context, AdvectionParms&
     return true;
 }
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

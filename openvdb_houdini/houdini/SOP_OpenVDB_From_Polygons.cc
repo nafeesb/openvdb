@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -99,7 +99,7 @@ sopBuildAttrMenu(void* data, PRM_Name* menuEntries, int themenusize,
 {
     if (data == NULL || menuEntries == NULL || spare == NULL) return;
 
-    SOP_Node* sop = CAST_SOPNODE((OP_Node *)data);
+    SOP_Node* sop = CAST_SOPNODE(static_cast<OP_Node*>(data));
 
     if (sop == NULL) {
         // terminate and quit
@@ -318,12 +318,35 @@ newSopOperator(OP_OperatorTable* table)
             "narrow band width can also be matched if the reference "
             "grid is a level set."));
 
+    {// Voxel size or voxel count menu
+        const auto items = std::vector<std::string>{
+            "worldVoxelSize",   "Size In World Units",
+            "countX",           "Count Along X Axis",
+            "countY",           "Count Along Y Axis",
+            "countZ",           "Count Along Z Axis",
+            "countLongest",     "Count Along Longest Axis"
+        };
+        parms.add(hutil::ParmFactory(PRM_STRING, "sizeOrCount", "Voxel")
+                  .setChoiceListItems(PRM_CHOICELIST_SINGLE, items)
+                  .setDefault(items[0])
+                  .setHelpText("Specify the voxel size in world units or voxel count along an axis"));
+    }
+
     parms.add(hutil::ParmFactory(PRM_FLT_J, "voxelSize", "Voxel Size")
         .setDefault(PRMpointOneDefaults)
-        .setRange(PRM_RANGE_RESTRICTED, 0, PRM_RANGE_UI, 5));
+        .setRange(PRM_RANGE_RESTRICTED, 0, PRM_RANGE_UI, 5)
+        .setHelpText("Specify the voxel size in world units."));
+
+    parms.add(hutil::ParmFactory(PRM_INT_J, "voxelCount", "Voxel Count")
+        .setDefault(100)
+        .setRange(PRM_RANGE_RESTRICTED, 1, PRM_RANGE_UI, 500)
+        .setHelpText(
+            "Specify the voxel count along an axis.\n"
+            "Note that the resulting voxel count might be off by one voxel"
+            " due to roundoff errors during the conversion process."));
 
     // Narrow-band width {
-    parms.add(hutil::ParmFactory(PRM_TOGGLE, "worldSpaceUnits", "Use World Space for Band")
+    parms.add(hutil::ParmFactory(PRM_TOGGLE, "worldSpaceUnits", "Use World Space Units for Narrow Band")
         .setCallbackFunc(&convertUnitsCB));
 
     //   voxel space units
@@ -534,12 +557,20 @@ SOP_OpenVDB_From_Polygons::updateParmsFlags()
 
     // Transform
     changed |= enableParm("group", refexists);
-    changed |= enableParm("voxelSize", !refexists);
 
     // Conversion
     const bool wsUnits = bool(evalInt("worldSpaceUnits", 0, time));
     const bool fillInterior = bool(evalInt("fillInterior", 0, time));
     const bool unsignedDist = bool(evalInt("unsignedDist", 0, time));
+
+    // Voxel size or voxel count menu
+    UT_String str;
+    evalString(str, "sizeOrCount", 0, time);
+    const bool countMenu =  str != "worldVoxelSize";
+    changed |= setVisibleState("voxelSize", !countMenu);
+    changed |= setVisibleState("voxelCount", countMenu);
+    changed |= enableParm("voxelSize", !countMenu && !refexists);
+    changed |= enableParm("voxelCount", countMenu && !refexists);
 
     changed |= enableParm("interiorBandWidth",
         !wsUnits && !fillInterior && !unsignedDist);
@@ -661,7 +692,6 @@ SOP_OpenVDB_From_Polygons::cookMySop(OP_Context& context)
             return error();
         }
 
-        mVoxelSize = static_cast<float>(evalFloat("voxelSize", 0, time));
         openvdb::math::Transform::Ptr transform;
 
         float inBand = std::numeric_limits<float>::max(), exBand = 0.0;
@@ -690,10 +720,28 @@ SOP_OpenVDB_From_Polygons::cookMySop(OP_Context& context)
                 return error();
             }
 
-        } else {
+        } else {// derive the voxel size and define output grid's transform
+
+            UT_String str;
+            evalString(str, "sizeOrCount", 0, time);
+            if ( str == "worldVoxelSize" ) {
+                mVoxelSize = static_cast<float>(evalFloat("voxelSize", 0, time));
+            } else {
+                const float dim = static_cast<float>(evalInt("voxelCount", 0, time));
+                UT_BoundingBox bbox;
+                inputGdp->getCachedBounds(bbox);
+                const float size = str == "countX" ? bbox.xsize() : str == "countY" ? bbox.ysize() :
+                                   str == "countZ" ? bbox.ysize() : bbox.sizeMax();
+                if ( evalInt("worldSpaceUnits", 0, time) ) {
+                    const float w = static_cast<float>(evalFloat("exteriorBandWidthWS", 0, time));
+                    mVoxelSize = (size + 2.0f*w)/dim;
+                } else {
+                    const float w = static_cast<float>(evalInt("exteriorBandWidth", 0, time));
+                    mVoxelSize = size/std::max(1.0f, dim - 2.0f*w);
+                }
+            }
             // Create a new transform
-            transform =
-                openvdb::math::Transform::createLinearTransform(mVoxelSize);
+            transform = openvdb::math::Transform::createLinearTransform(mVoxelSize);
         }
 
         if (mVoxelSize < 1e-5) {
@@ -1073,6 +1121,6 @@ SOP_OpenVDB_From_Polygons::transferAttributes(
     }
 }
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

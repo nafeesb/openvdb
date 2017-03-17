@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -27,7 +27,7 @@
 // LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
 //
 ///////////////////////////////////////////////////////////////////////////
-//
+
 /// @file SOP_OpenVDB_Filter_Level_Set.cc
 ///
 /// @author FX R&D OpenVDB team
@@ -308,13 +308,13 @@ struct FilterParms {
         , mStencilWidth(0)
         , mVoxelOffset(0.0f)
         , mHalfWidthWorld(0.1f)
-        , mStencilWidthWorld(0.1f) 
+        , mStencilWidthWorld(0.1f)
         , mWorldUnits(false)
         , mMinMask(0)
         , mMaxMask(1)
         , mInvertMask(false)
         , mAccuracy(ACCURACY_UPWIND_FIRST)
-        , mMaskInputNode(NULL)
+        , mMaskInputNode(nullptr)
     {
     }
 
@@ -369,27 +369,27 @@ private:
 
     template<typename FilterT>
     void offset(const FilterParms&, FilterT&, const float offset, bool verbose,
-        const typename FilterT::MaskType* mask = NULL);
+        const typename FilterT::MaskType* mask = nullptr);
 
     template<typename FilterT>
     void mean(const FilterParms&, FilterT&, BossT&, bool verbose,
-        const typename FilterT::MaskType* mask = NULL);
+        const typename FilterT::MaskType* mask = nullptr);
 
     template<typename FilterT>
     void gaussian(const FilterParms&, FilterT&, BossT&, bool verbose,
-        const typename FilterT::MaskType* mask = NULL);
+        const typename FilterT::MaskType* mask = nullptr);
 
     template<typename FilterT>
     void median(const FilterParms&, FilterT&, BossT&, bool verbose,
-        const typename FilterT::MaskType* mask = NULL);
+        const typename FilterT::MaskType* mask = nullptr);
 
     template<typename FilterT>
     void meanCurvature(const FilterParms&, FilterT&, BossT&, bool verbose,
-        const typename FilterT::MaskType* mask = NULL);
+        const typename FilterT::MaskType* mask = nullptr);
 
     template<typename FilterT>
     void laplacian(const FilterParms&, FilterT&, BossT&, bool verbose,
-        const typename FilterT::MaskType* mask = NULL);
+        const typename FilterT::MaskType* mask = nullptr);
 
     template<typename FilterT>
     void renormalize(const FilterParms&, FilterT&, BossT&, bool verbose = false);
@@ -409,7 +409,7 @@ private:
 void
 newSopOperator(OP_OperatorTable* table)
 {
-    if (table == NULL) return;
+    if (table == nullptr) return;
 
     for (int n = 0; n < NUM_OPERATOR_TYPES; ++n) {
 
@@ -461,7 +461,7 @@ newSopOperator(OP_OperatorTable* table)
             .setRange(PRM_RANGE_RESTRICTED, 0, PRM_RANGE_UI, 10));
 
         // Narrow-Band half-width
-        parms.add(hutil::ParmFactory(PRM_INT_J, "halfWidth", "Half-Width") 
+        parms.add(hutil::ParmFactory(PRM_INT_J, "halfWidth", "Half-Width")
             .setDefault(PRMthreeDefaults)
             .setRange(PRM_RANGE_RESTRICTED, 1, PRM_RANGE_UI, 10)
             .setHelpText("Desired narrow band half-width in voxel units "
@@ -592,7 +592,7 @@ SOP_OpenVDB_Filter_Level_Set::factoryNarrowBand(
 SOP_OpenVDB_Filter_Level_Set::SOP_OpenVDB_Filter_Level_Set(
     OP_Network* net, const char* name, OP_Operator* op, OperatorType opType)
     : hvdb::SOP_NodeVDB(net, name, op)
-    , mOpType(opType) 
+    , mOpType(opType)
 {
 }
 
@@ -873,8 +873,13 @@ SOP_OpenVDB_Filter_Level_Set::filterGrid(OP_Context& context, FilterT& filter,
         const GU_Detail *maskGeo = maskScope.getGdp();
 
         if (maskGeo) {
+#if (UT_MAJOR_VERSION_INT >= 15)
+            const GA_PrimitiveGroup * maskGroup =
+                parsePrimitiveGroups(parms.mMaskName.c_str(), GroupCreator(maskGeo));
+#else
             const GA_PrimitiveGroup * maskGroup =
                 parsePrimitiveGroups(parms.mMaskName.c_str(), const_cast<GU_Detail*>(maskGeo));
+#endif
 
             if (!maskGroup && !parms.mMaskName.empty()) {
                 addWarning(SOP_MESSAGE, "Mask not found.");
@@ -1071,7 +1076,7 @@ SOP_OpenVDB_Filter_Level_Set::laplacian(const FilterParms& parms, FilterT& filte
 template<typename FilterT>
 inline void
 SOP_OpenVDB_Filter_Level_Set::renormalize(const FilterParms& parms, FilterT& filter,
-    BossT& boss, bool verbose)
+    BossT&, bool verbose)
 {
     // We will restore the old state since it is important to level set tracking
     const typename FilterT::State s = filter.getState();
@@ -1124,6 +1129,6 @@ SOP_OpenVDB_Filter_Level_Set::track(const FilterParms& parms, FilterT& filter,
     }
 }
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

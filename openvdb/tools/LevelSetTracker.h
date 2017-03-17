@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -27,7 +27,7 @@
 // LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
 //
 ///////////////////////////////////////////////////////////////////////////
-//
+
 /// @author Ken Museth
 ///
 /// @file LevelSetTracker.h
@@ -42,7 +42,7 @@
 #include <tbb/parallel_for.h>
 #include <boost/bind.hpp>
 #include <boost/function.hpp>
-#include <boost/type_traits/is_floating_point.hpp>
+#include <type_traits>
 #include <openvdb/Types.h>
 #include <openvdb/math/Math.h>
 #include <openvdb/math/FiniteDifference.h>
@@ -54,7 +54,7 @@
 #include <openvdb/tree/ValueAccessor.h>
 #include <openvdb/tree/LeafManager.h>
 #include "ChangeBackground.h"// for changeLevelSetBackground
-#include "Morphology.h"//for dilateVoxels
+#include "Morphology.h"//for dilateActiveValues
 #include "Prune.h"// for pruneLevelSet
 
 namespace openvdb {
@@ -75,7 +75,8 @@ public:
     typedef typename LeafManagerType::LeafRange  LeafRange;
     typedef typename LeafManagerType::BufferType BufferType;
     typedef typename TreeType::template ValueConverter<ValueMask>::Type MaskTreeType;
-    BOOST_STATIC_ASSERT(boost::is_floating_point<ValueType>::value);
+    static_assert(std::is_floating_point<ValueType>::value,
+        "LevelSetTracker requires a level set grid with floating-point values");
 
     /// Lightweight struct that stores the state of the LevelSetTracker
     struct State {
@@ -91,7 +92,7 @@ public:
 
     /// @brief Main constructor
     /// @throw RuntimeError if the grid is not a level set
-    LevelSetTracker(GridT& grid, InterruptT* interrupt = NULL);
+    LevelSetTracker(GridT& grid, InterruptT* interrupt = nullptr);
 
     virtual ~LevelSetTracker() { delete mLeafs; }
 
@@ -101,7 +102,7 @@ public:
     void normalize(const MaskType* mask);
 
     /// @brief Iterative normalization, i.e. solving the Eikonal equation
-    void normalize() { this->normalize<MaskTreeType>(NULL); }
+    void normalize() { this->normalize<MaskTreeType>(nullptr); }
 
     /// @brief Track the level set interface, i.e. rebuild and normalize the
     /// narrow band of the level set.
@@ -216,7 +217,7 @@ private:
         Normalizer(LevelSetTracker& tracker, const MaskT* mask);
         void normalize();
         void operator()(const LeafRange& r) const {mTask(const_cast<Normalizer*>(this), r);}
-        void cook(int swapBuffer=0);
+        void cook(const char* msg, int swapBuffer=0);
         template <int Nominator, int Denominator>
         void euler(const LeafRange& range, Index phiBuffer, Index resultBuffer);
         inline void euler01(const LeafRange& r) {this->euler<0,1>(r, 0, 1);}
@@ -295,7 +296,7 @@ LevelSetTracker<GridT, InterruptT>::
 track()
 {
     // Dilate narrow-band (this also rebuilds the leaf array!)
-    tools::dilateVoxels(*mLeafs);
+    tools::dilateActiveValues( *mLeafs, 1, tools::NN_FACE, tools::IGNORE_TILES);
 
     // Compute signed distances in dilated narrow-band
     this->normalize();
@@ -311,15 +312,13 @@ dilate(int iterations)
 {
     if (this->getNormCount() == 0) {
         for (int i=0; i < iterations; ++i) {
-            tools::dilateVoxels(*mLeafs);
-            mLeafs->rebuildLeafArray();
+            tools::dilateActiveValues( *mLeafs, 1, tools::NN_FACE, tools::IGNORE_TILES);
             tools::changeLevelSetBackground(this->leafs(), mDx + mGrid->background());
         }
     } else {
         for (int i=0; i < iterations; ++i) {
             MaskTreeType mask0(mGrid->tree(), false, TopologyCopy());
-            tools::dilateVoxels(*mLeafs);
-            mLeafs->rebuildLeafArray();
+            tools::dilateActiveValues( *mLeafs, 1, tools::NN_FACE, tools::IGNORE_TILES);
             tools::changeLevelSetBackground(this->leafs(), mDx + mGrid->background());
             MaskTreeType mask(mGrid->tree(), false, TopologyCopy());
             mask.topologyDifference(mask0);
@@ -399,6 +398,7 @@ normalize(const MaskT* mask)
         this->normalize1<math::WENO5_BIAS,   MaskT>(mask); break;
     case math::HJWENO5_BIAS:
         this->normalize1<math::HJWENO5_BIAS, MaskT>(mask); break;
+    case math::UNKNOWN_BIAS:
     default:
         OPENVDB_THROW(ValueError, "Spatial difference scheme not supported!");
     }
@@ -417,6 +417,7 @@ normalize1(const MaskT* mask)
         this->normalize2<SpatialScheme, math::TVD_RK2, MaskT>(mask); break;
     case math::TVD_RK3:
         this->normalize2<SpatialScheme, math::TVD_RK3, MaskT>(mask); break;
+    case math::UNKNOWN_TIS:
     default:
         OPENVDB_THROW(ValueError, "Temporal integration scheme not supported!");
     }
@@ -514,7 +515,7 @@ normalize()
             mTask = boost::bind(&Normalizer::euler01, _1, _2);
 
             // Cook and swap buffer 0 and 1 such that Phi_t1(0) and Phi_t0(1)
-            this->cook(1);
+            this->cook("Normalizing level set using TVD_RK1", 1);
             break;
         case math::TVD_RK2:
             // Perform one explicit Euler step: t1 = t0 + dt
@@ -522,14 +523,14 @@ normalize()
             mTask = boost::bind(&Normalizer::euler01, _1, _2);
 
             // Cook and swap buffer 0 and 1 such that Phi_t1(0) and Phi_t0(1)
-            this->cook(1);
+            this->cook("Normalizing level set using TVD_RK1 (step 1 of 2)", 1);
 
             // Convex combine explicit Euler step: t2 = t0 + dt
             // Phi_t2(1) = 1/2 * Phi_t0(1) + 1/2 * (Phi_t1(0) - dt * V.Grad_t1(0))
             mTask = boost::bind(&Normalizer::euler12, _1, _2);
 
             // Cook and swap buffer 0 and 1 such that Phi_t2(0) and Phi_t1(1)
-            this->cook(1);
+            this->cook("Normalizing level set using TVD_RK1 (step 2 of 2)", 1);
             break;
         case math::TVD_RK3:
             // Perform one explicit Euler step: t1 = t0 + dt
@@ -537,22 +538,23 @@ normalize()
             mTask = boost::bind(&Normalizer::euler01, _1, _2);
 
             // Cook and swap buffer 0 and 1 such that Phi_t1(0) and Phi_t0(1)
-            this->cook(1);
+            this->cook("Normalizing level set using TVD_RK3 (step 1 of 3)", 1);
 
             // Convex combine explicit Euler step: t2 = t0 + dt/2
             // Phi_t2(2) = 3/4 * Phi_t0(1) + 1/4 * (Phi_t1(0) - dt * V.Grad_t1(0))
             mTask = boost::bind(&Normalizer::euler34, _1, _2);
 
             // Cook and swap buffer 0 and 2 such that Phi_t2(0) and Phi_t1(2)
-            this->cook(2);
+            this->cook("Normalizing level set using TVD_RK3 (step 2 of 3)", 2);
 
             // Convex combine explicit Euler step: t3 = t0 + dt
             // Phi_t3(2) = 1/3 * Phi_t0(1) + 2/3 * (Phi_t2(0) - dt * V.Grad_t2(0)
             mTask = boost::bind(&Normalizer::euler13, _1, _2);
 
             // Cook and swap buffer 0 and 2 such that Phi_t3(0) and Phi_t2(2)
-            this->cook(2);
+            this->cook("Normalizing level set using TVD_RK3 (step 3 of 3)", 2);
             break;
+        case math::UNKNOWN_TIS:
         default:
             OPENVDB_THROW(ValueError, "Temporal integration scheme not supported!");
         }
@@ -570,18 +572,14 @@ template<math::BiasedGradientScheme      SpatialScheme,
 inline void
 LevelSetTracker<GridT, InterruptT>::
 Normalizer<SpatialScheme, TemporalScheme, MaskT>::
-cook(int swapBuffer)
+cook(const char* msg, int swapBuffer)
 {
-    mTracker.startInterrupter("Normalizing Level Set");
+    mTracker.startInterrupter( msg );
 
     const int grainSize   = mTracker.getGrainSize();
     const LeafRange range = mTracker.leafs().leafRange(grainSize);
 
-    if (grainSize>0) {
-        tbb::parallel_for(range, *this);
-    } else {
-        (*this)(range);
-    }
+    grainSize>0 ? tbb::parallel_for(range, *this) : (*this)(range);
 
     mTracker.leafs().swapLeafBuffer(swapBuffer, grainSize==0);
 
@@ -629,7 +627,7 @@ euler(const LeafRange& range, Index phiBuffer, Index resultBuffer)
     for (typename LeafRange::Iterator leafIter = range.begin(); leafIter; ++leafIter) {
         const ValueType* phi = leafIter.buffer(phiBuffer).data();
         ValueType* result = leafIter.buffer(resultBuffer).data();
-        if (mMask == NULL) {
+        if (mMask == nullptr) {
             for (VoxelIterT iter = leafIter->cbeginValueOn(); iter; ++iter) {
                 stencil.moveTo(iter);
                 this->eval<Nominator, Denominator>(stencil, phi, result, iter.pos());
@@ -651,6 +649,6 @@ euler(const LeafRange& range, Index phiBuffer, Index resultBuffer)
 
 #endif // OPENVDB_TOOLS_LEVEL_SET_TRACKER_HAS_BEEN_INCLUDED
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

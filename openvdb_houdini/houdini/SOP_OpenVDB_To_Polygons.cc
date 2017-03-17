@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -43,6 +43,7 @@
 
 #include <openvdb/tools/VolumeToMesh.h>
 #include <openvdb/tools/MeshToVolume.h>
+#include <openvdb/tools/Morphology.h>
 #include <openvdb/tools/LevelSetUtil.h>
 #include <openvdb/tools/Prune.h>
 #include <openvdb/math/Operators.h>
@@ -108,8 +109,6 @@ public:
 
     virtual int isRefInput(unsigned i) const { return (i > 0); }
 
-    void checkActivePart(float time);
-
 protected:
     virtual OP_ERROR cookMySop(OP_Context&);
     virtual bool updateParmsFlags();
@@ -117,45 +116,12 @@ protected:
 
     template <class GridType>
     void referenceMeshing(
-        std::list<openvdb::GridBase::Ptr>& grids,
+        std::list<openvdb::GridBase::ConstPtr>& grids,
         openvdb::tools::VolumeToMesh& mesher,
         const GU_Detail* refGeo,
         hvdb::Interrupter& boss,
         const fpreal time);
 };
-
-
-////////////////////////////////////////
-
-
-namespace {
-
-// Callback to check partition limit
-int
-checkActivePartCB(void* data, int /*idx*/, float time, const PRM_Template*)
-{
-    SOP_OpenVDB_To_Polygons* sop = static_cast<SOP_OpenVDB_To_Polygons*>(data);
-    if (sop == NULL) return 0;
-    sop->checkActivePart(time);
-    return 1;
-}
-
-} // namespace
-
-
-void
-SOP_OpenVDB_To_Polygons::checkActivePart(float time)
-{
-    const int partitions = evalInt("automaticpartitions", 0, time);
-    const int activepart = evalInt("activepart", 0, time);
-
-    if (activepart > partitions) {
-        setInt("activepart", 0, time, partitions);
-    }
-}
-
-
-////////////////////////////////////////
 
 
 void
@@ -204,18 +170,6 @@ newSopOperator(OP_OperatorTable* table)
 
     parms.add(hutil::ParmFactory(PRM_TOGGLE, "keepvdbname", "Preserve VDB Name")
         .setHelpText("Mark each primitive with the corresponding VDB name."));
-
-    parms.add(hutil::ParmFactory(PRM_INT_J, "automaticpartitions", "Automatic Partitions")
-        .setRange(PRM_RANGE_RESTRICTED, 1, PRM_RANGE_UI, 20)
-        .setHelpText("Subdivide volume and mesh into disjoint parts.")
-        .setDefault(PRMoneDefaults)
-        .setCallbackFunc(&checkActivePartCB));
-
-    parms.add(hutil::ParmFactory(PRM_INT_J, "activepart", "Active Part")
-        .setRange(PRM_RANGE_RESTRICTED, 1, PRM_RANGE_UI, 20)
-        .setHelpText("Specific partition to mesh.")
-        .setDefault(PRMzeroDefaults)
-        .setCallbackFunc(&checkActivePartCB));
 
 
     //////////
@@ -303,6 +257,8 @@ newSopOperator(OP_OperatorTable* table)
     hutil::ParmList obsoleteParms;
     obsoleteParms.add(hutil::ParmFactory(PRM_TOGGLE, "smoothseams", "Smooth Seams"));
     obsoleteParms.add(hutil::ParmFactory(PRM_TOGGLE, "invertmask", "").setDefault(PRMoneDefaults));
+    obsoleteParms.add(hutil::ParmFactory(PRM_INT_J, "automaticpartitions", ""));
+    obsoleteParms.add(hutil::ParmFactory(PRM_INT_J, "activepart", ""));
 
     hvdb::OpenVDBOpFactory("OpenVDB To Polygons", SOP_OpenVDB_To_Polygons::factory, parms, *table)
         .setObsoleteParms(obsoleteParms)
@@ -381,14 +337,18 @@ SOP_OpenVDB_To_Polygons::updateParmsFlags()
     const bool adaptivitymask = bool(evalInt("adaptivityfield", 0, 0));
     changed |= enableParm("adaptivityfieldname", maskexists && adaptivitymask);
 
-    const bool partition = evalInt("automaticpartitions", 0, 0) > 1;
-    changed |= enableParm("activepart", partition);
-
     return changed;
 }
 
 
 ////////////////////////////////////////
+
+
+void copyMesh(GU_Detail&, openvdb::tools::VolumeToMesh&, hvdb::Interrupter&,
+    const bool usePolygonSoup = true, const char* gridName = NULL,
+    GA_PrimitiveGroup* surfaceGroup = NULL, GA_PrimitiveGroup* interiorGroup = NULL,
+    GA_PrimitiveGroup* seamGroup = NULL, GA_PointGroup* seamPointGroup = NULL);
+
 
 void
 copyMesh(
@@ -399,12 +359,12 @@ copyMesh(
 #else
     hvdb::Interrupter&,
 #endif
-    const bool usePolygonSoup = true,
-    const char* gridName = NULL,
-    GA_PrimitiveGroup* surfaceGroup = NULL,
-    GA_PrimitiveGroup* interiorGroup = NULL,
-    GA_PrimitiveGroup* seamGroup = NULL,
-    GA_PointGroup* seamPointGroup = NULL)
+    const bool usePolygonSoup,
+    const char* gridName,
+    GA_PrimitiveGroup* surfaceGroup,
+    GA_PrimitiveGroup* interiorGroup,
+    GA_PrimitiveGroup* seamGroup,
+    GA_PointGroup* seamPointGroup)
 {
     const openvdb::tools::PointList& points = mesher.pointList();
     openvdb::tools::PolygonPoolList& polygonPoolList = mesher.polygonPoolList();
@@ -483,7 +443,7 @@ copyMesh(
     const GA_Offset startpt = detail.appendPointBlock(npoints);
     UT_ASSERT_COMPILETIME(sizeof(openvdb::tools::PointList::element_type) == sizeof(UT_Vector3));
     GA_RWHandleV3 pthandle(detail.getP());
-    pthandle.setBlock(startpt, npoints, (UT_Vector3 *)points.get());
+    pthandle.setBlock(startpt, npoints, reinterpret_cast<UT_Vector3*>(points.get()));
 
     // group fracture seam points
     if (seamPointGroup && GA_Size(mesher.pointFlags().size()) == npoints) {
@@ -685,11 +645,6 @@ SOP_OpenVDB_To_Polygons::cookMySop(OP_Context& context)
         // Setup level set mesher
         openvdb::tools::VolumeToMesh mesher(iso, adaptivity);
 
-        // Slicing options
-        mesher.partition(
-            evalInt("automaticpartitions", 0, time),
-            evalInt("activepart", 0, time) - 1);
-
         // Check mask input
         const GU_Detail* maskGeo = inputGeo(2);
         if (maskGeo) {
@@ -698,9 +653,13 @@ SOP_OpenVDB_To_Polygons::cookMySop(OP_Context& context)
                 UT_String maskStr;
                 evalString(maskStr, "surfacemaskname", 0, time);
 
+#if (UT_MAJOR_VERSION_INT >= 15)
+                const GA_PrimitiveGroup * maskGroup =
+                    parsePrimitiveGroups(maskStr.buffer(), GroupCreator(maskGeo));
+#else
                 const GA_PrimitiveGroup * maskGroup =
                     parsePrimitiveGroups(maskStr.buffer(), const_cast<GU_Detail*>(maskGeo));
-
+#endif
                 if (!maskGroup && maskStr.length() > 0) {
                     addWarning(SOP_MESSAGE, "Surface mask not found.");
                 } else {
@@ -750,7 +709,7 @@ SOP_OpenVDB_To_Polygons::cookMySop(OP_Context& context)
         if (refGeo) {
 
             // Collect all level set grids.
-            std::list<openvdb::GridBase::Ptr> grids;
+            std::list<openvdb::GridBase::ConstPtr> grids;
             std::vector<std::string> nonLevelSetList, nonLinearList;
             for (; vdbIt; ++vdbIt) {
                 if (boss.wasInterrupted()) break;
@@ -768,7 +727,8 @@ SOP_OpenVDB_To_Polygons::cookMySop(OP_Context& context)
 
                 // (We need a shallow copy to sync primitive & grid names).
                 grids.push_back(vdbIt->getGrid().copyGrid());
-                grids.back()->setName(vdbIt->getGridName());
+                openvdb::ConstPtrCast<openvdb::GridBase>(grids.back())->setName(
+                    vdbIt->getGridName());
             }
 
             if (!nonLevelSetList.empty()) {
@@ -843,7 +803,7 @@ SOP_OpenVDB_To_Polygons::cookMySop(OP_Context& context)
 template<class GridType>
 void
 SOP_OpenVDB_To_Polygons::referenceMeshing(
-    std::list<openvdb::GridBase::Ptr>& grids,
+    std::list<openvdb::GridBase::ConstPtr>& grids,
     openvdb::tools::VolumeToMesh& mesher,
     const GU_Detail* refGeo,
     hvdb::Interrupter& boss,
@@ -965,7 +925,6 @@ SOP_OpenVDB_To_Polygons::referenceMeshing(
     const double iadaptivity = double(evalFloat("internaladaptivity", 0, time));
     mesher.setRefGrid(refGrid, iadaptivity);
 
-    std::list<openvdb::GridBase::Ptr>::iterator it = grids.begin();
     std::vector<std::string> badTransformList, badBackgroundList, badTypeList;
 
     GA_PrimitiveGroup *surfaceGroup = NULL, *interiorGroup = NULL, *seamGroup = NULL;
@@ -998,8 +957,7 @@ SOP_OpenVDB_To_Polygons::referenceMeshing(
         }
     }
 
-
-    for (it = grids.begin(); it != grids.end(); ++it) {
+    for (auto it = grids.begin(); it != grids.end(); ++it) {
 
         if (boss.wasInterrupted()) break;
 
@@ -1074,6 +1032,6 @@ SOP_OpenVDB_To_Polygons::referenceMeshing(
     }
 }
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

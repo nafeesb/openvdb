@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -114,12 +114,17 @@ public:
         MyBase::mm[15] = T(p);
     }
 
-    /// Construct matrix given basis vectors (columns)
+    /// Construct matrix from rows or columns vectors (defaults to rows
+    /// for historical reasons)
     template<typename Source>
     Mat4(const Vec4<Source> &v1, const Vec4<Source> &v2,
-         const Vec4<Source> &v3, const Vec4<Source> &v4)
+         const Vec4<Source> &v3, const Vec4<Source> &v4, bool rows = true)
     {
-        setBasis(v1, v2, v3, v4);
+        if (rows) {
+            this->setRows(v1, v2, v3, v4);
+        } else {
+            this->setColumns(v1, v2, v3, v4);
+        }
     }
 
     /// Copy constructor
@@ -145,11 +150,23 @@ public:
 
     /// Predefined constant for identity matrix
     static const Mat4<T>& identity() {
+        static const Mat4<T> sIdentity = Mat4<T>(
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1
+        );
         return sIdentity;
     }
 
     /// Predefined constant for zero matrix
     static const Mat4<T>& zero() {
+        static const Mat4<T> sZero = Mat4<T>(
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+            0, 0, 0, 0
+        );
         return sZero;
     }
 
@@ -219,9 +236,9 @@ public:
         return MyBase::mm[4*i+j];
     }
 
-    /// Set the columns of "this" matrix to the vectors v1, v2, v3, v4
-    void setBasis(const Vec4<T> &v1, const Vec4<T> &v2,
-                         const Vec4<T> &v3, const Vec4<T> &v4)
+    /// Set the rows of "this" matrix to the vectors v1, v2, v3, v4
+    void setRows(const Vec4<T> &v1, const Vec4<T> &v2,
+                 const Vec4<T> &v3, const Vec4<T> &v4)
     {
         MyBase::mm[ 0] = v1[0];
         MyBase::mm[ 1] = v1[1];
@@ -242,6 +259,38 @@ public:
         MyBase::mm[13] = v4[1];
         MyBase::mm[14] = v4[2];
         MyBase::mm[15] = v4[3];
+    }
+
+    /// Set the columns of "this" matrix to the vectors v1, v2, v3, v4
+    void setColumns(const Vec4<T> &v1, const Vec4<T> &v2,
+                    const Vec4<T> &v3, const Vec4<T> &v4)
+    {
+        MyBase::mm[ 0] = v1[0];
+        MyBase::mm[ 1] = v2[0];
+        MyBase::mm[ 2] = v3[0];
+        MyBase::mm[ 3] = v4[0];
+
+        MyBase::mm[ 4] = v1[1];
+        MyBase::mm[ 5] = v2[1];
+        MyBase::mm[ 6] = v3[1];
+        MyBase::mm[ 7] = v4[1];
+
+        MyBase::mm[ 8] = v1[2];
+        MyBase::mm[ 9] = v2[2];
+        MyBase::mm[10] = v3[2];
+        MyBase::mm[11] = v4[2];
+
+        MyBase::mm[12] = v1[3];
+        MyBase::mm[13] = v2[3];
+        MyBase::mm[14] = v3[3];
+        MyBase::mm[15] = v4[3];
+    }
+
+    /// Set the rows of "this" matrix to the vectors v1, v2, v3, v4
+    OPENVDB_DEPRECATED void setBasis(const Vec4<T> &v1, const Vec4<T> &v2,
+                                     const Vec4<T> &v3, const Vec4<T> &v4)
+    {
+        this->setRows(v1, v2, v3, v4);
     }
 
 
@@ -667,13 +716,6 @@ public:
 
         return det;
     }
-
-    /// This function snaps a specific axis to a specific direction,
-    /// preserving scaling. It does this using minimum energy, thus
-    /// posing a unique solution if basis & direction arent parralel.
-    /// Direction need not be unit.
-    Mat4 snapBasis(Axis axis, const Vec3<T> &direction)
-    {return snapBasis(*this, axis, direction);}
 
     /// Sets the matrix to a matrix that translates by v
     static Mat4 translation(const Vec3d& v)
@@ -1103,23 +1145,8 @@ private:
             a.mm[i0row+j1]*det2(a, i1,i2, j2,j0) +
             a.mm[i0row+j2]*det2(a, i1,i2, j0,j1);
     }
-
-    static const Mat4<T> sIdentity;
-    static const Mat4<T> sZero;
 }; // class Mat4
 
-
-template <typename T>
-const Mat4<T> Mat4<T>::sIdentity = Mat4<T>(1, 0, 0, 0,
-                                           0, 1, 0, 0,
-                                           0, 0, 1, 0,
-                                           0, 0, 0, 1);
-
-template <typename T>
-const Mat4<T> Mat4<T>::sZero = Mat4<T>(0, 0, 0, 0,
-                                       0, 0, 0, 0,
-                                       0, 0, 0, 0,
-                                       0, 0, 0, 0);
 
 /// @relates Mat4
 /// @brief Equality operator, does exact floating point comparisons
@@ -1345,12 +1372,7 @@ inline bool hasTranslation(const Mat4<T>& m) {
 
 typedef Mat4<float>  Mat4s;
 typedef Mat4<double> Mat4d;
-
-#if DWREAL_IS_DOUBLE == 1
-typedef Mat4d    Mat4f;
-#else
-typedef Mat4s    Mat4f;
-#endif // DWREAL_IS_DOUBLE
+typedef Mat4d        Mat4f;
 
 } // namespace math
 
@@ -1363,6 +1385,6 @@ template<> inline math::Mat4d zeroVal<math::Mat4d>() { return math::Mat4d::ident
 
 #endif // OPENVDB_UTIL_MAT4_H_HAS_BEEN_INCLUDED
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

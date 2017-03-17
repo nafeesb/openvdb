@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -28,18 +28,18 @@
 //
 ///////////////////////////////////////////////////////////////////////////
 //
-/// @file SOP_OpenVDB_From_Mask.cc
+/// @file SOP_OpenVDB_Topology_To_Level_Set.cc
 ///
 /// @author FX R&D OpenVDB team
-
 
 #include <houdini_utils/ParmFactory.h>
 #include <openvdb_houdini/Utils.h>
 #include <openvdb_houdini/SOP_NodeVDB.h>
 #include <openvdb_houdini/GU_VDBPointTools.h>
 
-#include <openvdb/tools/PointMaskGrid.h>
 #include <openvdb/tools/TopologyToLevelSet.h>
+#include <openvdb/tools/LevelSetUtil.h>
+#include <openvdb/points/PointDataGrid.h>
 
 #include <UT/UT_Interrupt.h>
 #include <GA/GA_Handle.h>
@@ -48,54 +48,48 @@
 #include <GU/GU_Detail.h>
 #include <PRM/PRM_Parm.h>
 
+
+namespace cvdb = openvdb;
 namespace hvdb = openvdb_houdini;
 namespace hutil = houdini_utils;
 
-class SOP_OpenVDB_From_Mask: public hvdb::SOP_NodeVDB
+
+class SOP_OpenVDB_Topology_To_Level_Set: public hvdb::SOP_NodeVDB
 {
 public:
-    SOP_OpenVDB_From_Mask(OP_Network*, const char* name, OP_Operator*);
-    virtual ~SOP_OpenVDB_From_Mask() {}
+    SOP_OpenVDB_Topology_To_Level_Set(OP_Network*, const char* name, OP_Operator*);
+    virtual ~SOP_OpenVDB_Topology_To_Level_Set() {}
 
     virtual bool updateParmsFlags();
 
     static OP_Node* factory(OP_Network*, const char* name, OP_Operator*);
 
-    int convertUnits();
-
 protected:
     virtual OP_ERROR cookMySop(OP_Context&);
-
-private:
-    float mVoxelSize;
 };
 
 
 ////////////////////////////////////////
 
 
-namespace
+namespace {
+
+struct Converter
 {
+    float bandWidthWorld;
+    int bandWidthVoxels, closingWidth, dilation, smoothingSteps, outputName;
+    bool worldSpaceUnits;
+    std::string customName;
 
-// Callback to convert from voxel to world space units
-int
-convertUnitsCB(void* data, int /*idx*/, float /*time*/, const PRM_Template*)
-{
-   SOP_OpenVDB_From_Mask* sop = static_cast<SOP_OpenVDB_From_Mask*>(data);
-   if (sop == NULL) return 0;
-   return sop->convertUnits();
-}
-
-
-struct TopologyConverter
-{
-    int bandWidthInVoxels, closingWidth, dilation, smoothingSteps; // public settings
-
-    TopologyConverter(GU_Detail& geo, hvdb::Interrupter& boss)
-        : bandWidthInVoxels(3)
+    Converter(GU_Detail& geo, hvdb::Interrupter& boss)
+        : bandWidthWorld(0)
+        , bandWidthVoxels(3)
         , closingWidth(1)
         , dilation(0)
         , smoothingSteps(0)
+        , outputName(0)
+        , worldSpaceUnits(false)
+        , customName("vdb")
         , mGeoPt(&geo)
         , mBossPt(&boss)
     {
@@ -104,20 +98,27 @@ struct TopologyConverter
     template<typename GridType>
     void operator()(const GridType& grid)
     {
-        openvdb::FloatGrid::Ptr sdfGrid = openvdb::tools::topologyToLevelSet(
-           grid, bandWidthInVoxels, closingWidth, dilation, smoothingSteps, mBossPt);
+        int bandWidth = bandWidthVoxels;
+        if (worldSpaceUnits) {
+            bandWidth = int(openvdb::math::Round(bandWidthWorld / grid.transform().voxelSize()[0]));
+        }
 
-        hvdb::createVdbPrimitive(*mGeoPt, sdfGrid, grid.getName().c_str());
+        openvdb::FloatGrid::Ptr sdfGrid = openvdb::tools::topologyToLevelSet(
+           grid, bandWidth, closingWidth, dilation, smoothingSteps, mBossPt);
+
+        std::string name = grid.getName();
+        if (outputName == 1) name += customName;
+        else if (outputName == 2) name = customName;
+
+        hvdb::createVdbPrimitive(*mGeoPt, sdfGrid, name.c_str());
     }
 
 private:
     GU_Detail         * const mGeoPt;
     hvdb::Interrupter * const mBossPt;
-}; // struct TopologyConverter
-
+}; // struct Converter
 
 } // unnamed namespace
-
 
 
 void
@@ -131,18 +132,25 @@ newSopOperator(OP_OperatorTable* table)
         .setHelpText("Specify a subset of the input grids.")
         .setChoiceList(&hutil::PrimGroupMenu));
 
-    parms.add(hutil::ParmFactory(PRM_STRING, "gridname", "Distance VDB")
-        .setDefault("surface")
-        .setHelpText("Output grid name, ignored for VDB inputs."));
+    {
+        const char* items[] = {
+            "keep",     "Keep Incoming VDB Names",
+            "append",   "Custom Append",
+            "replace",   "Custom Replace",
+            NULL
+        };
 
-    parms.add(hutil::ParmFactory(PRM_FLT_J, "voxelsize", "Voxel Size")
-        .setDefault(PRMpointOneDefaults)
-        .setRange(PRM_RANGE_RESTRICTED, 0, PRM_RANGE_UI, 5)
-        .setHelpText("Ignored for VDB inputs."));
+        parms.add(hutil::ParmFactory(PRM_ORD, "outputName", "Output Name")
+            .setDefault(PRMzeroDefaults)
+            .setHelpText("Rename output grid(s)")
+            .setChoiceListItems(PRM_CHOICELIST_SINGLE, items));
+
+        parms.add(hutil::ParmFactory(PRM_STRING, "customName", "Custom Name")
+            .setHelpText("Used to rename the input grids"));
+    }
 
     /// Narrow-band width {
-    parms.add(hutil::ParmFactory(PRM_TOGGLE, "worldSpaceUnits", "Use World Space for Band")
-        .setCallbackFunc(&convertUnitsCB));
+    parms.add(hutil::ParmFactory(PRM_TOGGLE, "worldSpaceUnits", "Use World Space for Band"));
 
     parms.add(hutil::ParmFactory(PRM_INT_J, "bandWidth", "Half-Band in Voxels")
         .setDefault(PRMthreeDefaults)
@@ -175,77 +183,50 @@ newSopOperator(OP_OperatorTable* table)
               .setRange(PRM_RANGE_RESTRICTED, 0, PRM_RANGE_UI, 10)
               .setHelpText("Number of smoothing interations"));
 
-
     // Register this operator.
-    hvdb::OpenVDBOpFactory("OpenVDB From Mask",
-        SOP_OpenVDB_From_Mask::factory, parms, *table)
-        .addInput("VDB Grids, Points and Packed Points");
+    hvdb::OpenVDBOpFactory("OpenVDB Topology To Level Set",
+        SOP_OpenVDB_Topology_To_Level_Set::factory, parms, *table)
+        .addAlias("OpenVDB From Mask")
+        .addInput("VDB Grids");
 }
+
 
 ////////////////////////////////////////
 
 
 OP_Node*
-SOP_OpenVDB_From_Mask::factory(OP_Network* net,
+SOP_OpenVDB_Topology_To_Level_Set::factory(OP_Network* net,
     const char* name, OP_Operator* op)
 {
-    return new SOP_OpenVDB_From_Mask(net, name, op);
+    return new SOP_OpenVDB_Topology_To_Level_Set(net, name, op);
 }
 
 
-SOP_OpenVDB_From_Mask::SOP_OpenVDB_From_Mask(OP_Network* net,
+SOP_OpenVDB_Topology_To_Level_Set::SOP_OpenVDB_Topology_To_Level_Set(OP_Network* net,
     const char* name, OP_Operator* op):
     hvdb::SOP_NodeVDB(net, name, op)
-    , mVoxelSize(0.1f)
 {
-}
-
-////////////////////////////////////////
-
-int
-SOP_OpenVDB_From_Mask::convertUnits()
-{
-    const bool toWSUnits = static_cast<bool>(evalInt("worldSpaceUnits", 0, 0));
-    float width;
-
-    if (toWSUnits) {
-        width = static_cast<float>(evalInt("bandWidth", 0, 0));
-        setFloat("bandWidthWS", 0, 0, width * mVoxelSize);
-        return 1;
-    }
-
-    width = static_cast<float>(evalFloat("bandWidthWS", 0, 0));
-    int voxelWidth = std::max(static_cast<int>(width / mVoxelSize), 1);
-    setInt("bandWidth", 0, 0, voxelWidth);
-
-    return 1;
 }
 
 
 // Enable or disable parameters in the UI.
 bool
-SOP_OpenVDB_From_Mask::updateParmsFlags()
+SOP_OpenVDB_Topology_To_Level_Set::updateParmsFlags()
 {
     bool changed = false;
-    const fpreal time = 0; // No point using CHgetTime as that is unstable.
-
-
-    // Conversion
+    const fpreal time = 0;
     const bool wsUnits = bool(evalInt("worldSpaceUnits", 0, time));
 
-
-    changed |= enableParm("bandWidth",
-                          !wsUnits);
-
-    changed |= enableParm("bandWidthWS",
-                          wsUnits);
-
+    changed |= enableParm("bandWidth", !wsUnits);
+    changed |= enableParm("bandWidthWS", wsUnits);
     changed |= enableParm("bandWidth", !wsUnits);
     changed |= enableParm("bandWidthWS", wsUnits);
 
     changed |= setVisibleState("bandWidth", !wsUnits);
     changed |= setVisibleState("bandWidthWS", wsUnits);
 
+    const bool useCustomName = evalInt("outputName", 0, time) != 0;
+    changed |= enableParm("customName", useCustomName);
 
     return changed;
 }
@@ -255,7 +236,7 @@ SOP_OpenVDB_From_Mask::updateParmsFlags()
 
 
 OP_ERROR
-SOP_OpenVDB_From_Mask::cookMySop(OP_Context& context)
+SOP_OpenVDB_Topology_To_Level_Set::cookMySop(OP_Context& context)
 {
     try {
         hutil::ScopedInputLock lock(*this, context);
@@ -265,85 +246,58 @@ SOP_OpenVDB_From_Mask::cookMySop(OP_Context& context)
         const GU_Detail* inputGeoPt = inputGeo(0);
         if(inputGeoPt == NULL) return error();
 
-        // Get UI settings
-
-        const float voxelSize = float(evalFloat("voxelsize", 0, time));
-        if (voxelSize < 1e-5) {
-            std::ostringstream ostr;
-            ostr << "The voxel size ("<< mVoxelSize << ") is too small.";
-            addError(SOP_MESSAGE, ostr.str().c_str());
-            return error();
-        }
-
-        mVoxelSize = voxelSize; // stash for world to index conversion.
-
-        const openvdb::math::Transform::Ptr transform =
-            openvdb::math::Transform::createLinearTransform(voxelSize);
-
-        int bandWidthInVoxels = 3;
-        if (evalInt("worldSpaceUnits", 0, time) != 0) {
-            bandWidthInVoxels = int(openvdb::math::Round(evalFloat("bandWidthWS", 0, time) / voxelSize));
-        } else {
-            bandWidthInVoxels = evalInt("bandWidth", 0, time);
-        }
-
-        const int dilation = evalInt("dilation", 0, time);
-        const int closingWidth = evalInt("closingwidth", 0, time);
-        const int smoothingSteps = evalInt("smoothingsteps", 0, time);
-
-        UT_String gridName;
-        evalString(gridName, "gridname", 0, time);
-
         hvdb::Interrupter boss;
 
+        // Get UI settings
+
+        UT_String customName, groupStr;
+        evalString(customName, "customName", 0, time);
+        evalString(groupStr, "group", 0, time);
+
+        Converter converter(*gdp, boss);
+        converter.worldSpaceUnits = evalInt("worldSpaceUnits", 0, time) != 0;
+        converter.bandWidthWorld = float(evalFloat("bandWidthWS", 0, time));
+        converter.bandWidthVoxels = evalInt("bandWidth", 0, time);
+        converter.closingWidth = evalInt("closingwidth", 0, time);
+        converter.dilation = evalInt("dilation", 0, time);
+        converter.smoothingSteps = evalInt("smoothingsteps", 0, time);
+        converter.outputName = evalInt("outputName", 0, time);
+        converter.customName = customName.toStdString();
 
         // Process VDB primitives
 
-        UT_String groupStr;
-        evalString(groupStr, "group", 0, time);
-        const GA_PrimitiveGroup* group = matchGroup(const_cast<GU_Detail&>(*inputGeoPt), groupStr.toStdString());
+        const GA_PrimitiveGroup* group =
+            matchGroup(const_cast<GU_Detail&>(*inputGeoPt), groupStr.toStdString());
 
         hvdb::VdbPrimCIterator vdbIt(inputGeoPt, group);
 
+        if (!vdbIt) {
+            addWarning(SOP_MESSAGE, "No VDB grids to process.");
+            return error();
+        }
 
-        if (vdbIt) {
+        for (; vdbIt; ++vdbIt) {
 
-            TopologyConverter converter(*gdp, boss);
+            if (boss.wasInterrupted()) break;
 
-            converter.bandWidthInVoxels = bandWidthInVoxels;
-            converter.closingWidth = closingWidth;
-            converter.dilation = dilation;
-            converter.smoothingSteps = smoothingSteps;
+            const GU_PrimVDB *vdb = *vdbIt;
 
-            for (; vdbIt; ++vdbIt) {
-
-                if (boss.wasInterrupted()) break;
-
-                const GU_PrimVDB *vdb = *vdbIt;
-
-                if (!GEOvdbProcessTypedGridTopology(*vdb, converter)) { // all hdk supported grid types
-
-                    if (vdb->getGrid().type() == openvdb::tools::PointIndexGrid::gridType()) { // point index grid
-                        openvdb::tools::PointIndexGrid::ConstPtr grid =
-                            openvdb::gridConstPtrCast<openvdb::tools::PointIndexGrid>(vdb->getGridPtr());
-                        converter(*grid);
-
-                    } else if (vdb->getGrid().type() == openvdb::MaskGrid::gridType()) { // mask grid
-                        openvdb::MaskGrid::ConstPtr grid =
-                            openvdb::gridConstPtrCast<openvdb::MaskGrid>(vdb->getGridPtr());
-                        converter(*grid);
-                    }
+            if (!GEOvdbProcessTypedGridTopology(*vdb, converter)) {
+                // Handle grid types that are not natively supported by Houdini.
+                if (vdb->getGrid().isType<cvdb::tools::PointIndexGrid>()) {
+                    cvdb::tools::PointIndexGrid::ConstPtr grid =
+                        cvdb::gridConstPtrCast<cvdb::tools::PointIndexGrid>(vdb->getGridPtr());
+                    converter(*grid);
+                } else if (vdb->getGrid().isType<cvdb::points::PointDataGrid>()) {
+                    cvdb::points::PointDataGrid::ConstPtr grid =
+                        cvdb::gridConstPtrCast<cvdb::points::PointDataGrid>(vdb->getGridPtr());
+                    converter(*grid);
+                } else if (vdb->getGrid().isType<cvdb::MaskGrid>()) {
+                    cvdb::MaskGrid::ConstPtr grid =
+                        cvdb::gridConstPtrCast<cvdb::MaskGrid>(vdb->getGridPtr());
+                    converter(*grid);
                 }
             }
-
-        } else {
-
-            openvdb::MaskGrid::Ptr maskGrid = GUvdbCreatePointMaskGrid(*transform, *inputGeoPt);
-
-            openvdb::FloatGrid::Ptr sdfGrid = openvdb::tools::topologyToLevelSet(
-                *maskGrid, bandWidthInVoxels, closingWidth, dilation, smoothingSteps, &boss);
-
-            hvdb::createVdbPrimitive(*gdp, sdfGrid, gridName.buffer());
         }
 
     } catch (std::exception& e) {
@@ -353,6 +307,6 @@ SOP_OpenVDB_From_Mask::cookMySop(OP_Context& context)
     return error();
 }
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

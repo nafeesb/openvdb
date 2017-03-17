@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -85,14 +85,18 @@ class OPENVDB_HOUDINI_API SOP_NodeVDB: public SOP_Node
 {
 public:
     SOP_NodeVDB(OP_Network*, const char*, OP_Operator*);
-    virtual ~SOP_NodeVDB() {}
+    ~SOP_NodeVDB() override = default;
 
-    virtual void fillInfoTreeNodeSpecific(UT_InfoTree&, fpreal time);
-    virtual void getNodeSpecificInfoText(OP_Context&, OP_NodeInfoParms&);
+#if (UT_MAJOR_VERSION_INT < 16)
+    void fillInfoTreeNodeSpecific(UT_InfoTree&, fpreal time) override;
+#else
+    void fillInfoTreeNodeSpecific(UT_InfoTree&, const OP_NodeInfoTreeParms&) override;
+#endif
+    void getNodeSpecificInfoText(OP_Context&, OP_NodeInfoParms&) override;
 
 protected:
-    virtual OP_ERROR cookMyGuide1(OP_Context&);
-    //virtual OP_ERROR cookMyGuide2(OP_Context&);
+    OP_ERROR cookMyGuide1(OP_Context&) override;
+    //OP_ERROR cookMyGuide2(OP_Context&) override;
 
     /// @brief Retrieve a group from a geometry detail by parsing a pattern
     /// (typically, the value of a Group parameter belonging to this node).
@@ -116,7 +120,6 @@ protected:
     /// @c resolveObsoleteParms(), when that function is implemented.
     void resolveRenamedParm(PRM_ParmList& obsoleteParms,
         const char* oldName, const char* newName);
-
 
     /// @brief Steal the geometry on the specified input if possible, instead of copying the data.
     ///
@@ -145,7 +148,6 @@ protected:
     OP_ERROR duplicateSourceStealable(const unsigned index,
         OP_Context& context, GU_Detail **pgdp, GU_DetailHandle& gdh, bool clean = true);
 
-
     /// @brief Steal the geometry on the specified input if possible, instead of copying the data.
     ///
     /// @details In certain cases where a node's input geometry isn't being shared with
@@ -166,7 +168,6 @@ protected:
     OP_ERROR duplicateSourceStealable(const unsigned index, OP_Context& context);
 
 private:
-
     /// @brief Traverse the upstream network to determine if the source input can be stolen.
     ///
     /// An upstream SOP cannot be stolen if it is implicitly caching the data (no "unload" flag)
@@ -177,12 +178,54 @@ private:
     /// @param index    the index of the input from which to perform this operation
     /// @param context  the current SOP context is used for cook time for network traversal
     bool isSourceStealable(const unsigned index, OP_Context& context) const;
-};
+}; // class SOP_NodeVDB
+
+
+////////////////////////////////////////
+
+
+/// @brief Namespace to hold functionality for registering info text callbacks. Whenever
+/// getNodeSpecificInfoText() is called, the default info text is added to MMB output unless
+/// a valid callback has been registered for the grid type.
+///
+/// @details Use node_info_text::registerGridSpecificInfoText<> to register a grid type to
+/// a function pointer which matches the ApplyGridSpecificInfoText signature.
+///
+///    void floatGridText(std::ostream&, const openvdb::GridBase&);
+///
+///    node_info_text::registerGridSpecificInfoText<openvdb::FloatGrid>(&floatGridText);
+///
+namespace node_info_text
+{
+    // The function pointer signature expected when registering an grid type text
+    // callback. The grid is passed untyped but is guaranteed to match the registered
+    // type.
+    typedef void (*ApplyGridSpecificInfoText)(std::ostream&, const openvdb::GridBase&);
+
+    /// @brief Register an info text callback to a specific grid type.
+    /// @note Does not add the callback if the grid type already has a registered callback.
+    /// @param gridType   the grid type as a unique string (see templated
+    ///                   registerGridSpecificInfoText<>)
+    /// @param callback   a pointer to the callback function to execute
+    void registerGridSpecificInfoText(const std::string& gridType,
+        ApplyGridSpecificInfoText callback);
+
+    /// @brief Register an info text callback to a templated grid type.
+    /// @note Does not add the callback if the grid type already has a registered callback.
+    /// @param callback   a pointer to the callback function to execute
+    template<typename GridType>
+    inline void registerGridSpecificInfoText(ApplyGridSpecificInfoText callback)
+    {
+        registerGridSpecificInfoText(GridType::gridType(), callback);
+    }
+
+} // namespace node_info_text
+
 
 } // namespace openvdb_houdini
 
 #endif // OPENVDB_HOUDINI_SOP_NODEVDB_HAS_BEEN_INCLUDED
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

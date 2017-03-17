@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -33,8 +33,8 @@
 ///
 /// @brief Collection of PointIndexGrid helpers for Houdini
 
-#ifndef __GU_VDBPOINTTOOLS_H_HAS_BEEN_INCLUDED__
-#define __GU_VDBPOINTTOOLS_H_HAS_BEEN_INCLUDED__
+#ifndef GU_VDBPOINTTOOLS_H_HAS_BEEN_INCLUDED
+#define GU_VDBPOINTTOOLS_H_HAS_BEEN_INCLUDED
 
 #if defined(SESI_OPENVDB)
     #include "GU_Detail.h"
@@ -59,14 +59,19 @@
 
 #include <openvdb/Platform.h>
 #include <openvdb/tools/PointIndexGrid.h>
-#include <openvdb/tools/PointMaskGrid.h>
+#include <openvdb/tools/ParticleAtlas.h>
+#include <openvdb/tools/PointsToMask.h>
 
 
 /// @brief Houdini point attribute wrapper
 template <typename VectorType>
-struct GU_VDBPointList {
-    typedef VectorType ValueType;   // OpenVDB convention.
-    typedef VectorType value_type;  // STL convention.
+struct GU_VDBPointList
+{
+    typedef boost::shared_ptr<GU_VDBPointList>          Ptr;
+    typedef boost::shared_ptr<const GU_VDBPointList>    ConstPtr;
+
+    typedef VectorType                                  PosType;
+    typedef typename PosType::value_type                ScalarType;
 
     GU_VDBPointList(const GU_Detail& detail, const GA_PointGroup* group = NULL)
         : mPositionHandle(detail.getP())
@@ -108,6 +113,10 @@ struct GU_VDBPointList {
         }
     }
 
+    static Ptr create(const GU_Detail& detail, const GA_PointGroup* group = NULL)
+    {
+        return Ptr(new GU_VDBPointList(detail, group));
+    }
 
     size_t size() const { return mSize; }
 
@@ -116,15 +125,15 @@ struct GU_VDBPointList {
 
     // Index access methods
 
-    void getPos(size_t n, VectorType& xyz) const {
+    void getPos(size_t n, PosType& xyz) const {
         getPosFromOffset((this->*getOffset)(n), xyz);
     }
 
-    void getVelocity(size_t n, VectorType& v) const {
+    void getVelocity(size_t n, PosType& v) const {
         getVelocityFromOffset((this->*getOffset)(n), v);
     }
 
-    void getRadius(size_t n, float& r) const {
+    void getRadius(size_t n, ScalarType& r) const {
         getRadiusFromOffset((this->*getOffset)(n), r);
     }
 
@@ -134,24 +143,23 @@ struct GU_VDBPointList {
         return (this->*getOffset)(n);
     }
 
-    void getPosFromOffset(const GA_Offset offset, VectorType& xyz) const {
+    void getPosFromOffset(const GA_Offset offset, PosType& xyz) const {
         const UT_Vector3 data = mPositionHandle.get(offset);
-        xyz[0] = typename VectorType::ValueType(data[0]);
-        xyz[1] = typename VectorType::ValueType(data[1]);
-        xyz[2] = typename VectorType::ValueType(data[2]);
+        xyz[0] = ScalarType(data[0]);
+        xyz[1] = ScalarType(data[1]);
+        xyz[2] = ScalarType(data[2]);
     }
 
-    void getVelocityFromOffset(const GA_Offset offset, VectorType& v) const {
+    void getVelocityFromOffset(const GA_Offset offset, PosType& v) const {
         const UT_Vector3 data = mVelocityHandle.get(offset);
-        v[0] = typename VectorType::ValueType(data[0]);
-        v[1] = typename VectorType::ValueType(data[1]);
-        v[2] = typename VectorType::ValueType(data[2]);
+        v[0] = ScalarType(data[0]);
+        v[1] = ScalarType(data[1]);
+        v[2] = ScalarType(data[2]);
     }
 
-    void getRadiusFromOffset(const GA_Offset offset, float& r) const {
-        r = mRadiusHandle.get(offset);
+    void getRadiusFromOffset(const GA_Offset offset, ScalarType& r) const {
+        r = ScalarType(mRadiusHandle.get(offset));
     }
-
 
 private:
     // Disallow copying
@@ -196,7 +204,8 @@ struct IndexToOffsetOp {
     void operator()(LeafT &leaf, size_t /*leafIndex*/) const {
         typename LeafT::IndexArray& indices = leaf.indices();
         for (size_t n = 0, N = indices.size(); n < N; ++n) {
-             indices[n] = typename LeafT::ValueType(mPointList->offsetFromIndex(GA_Index(indices[n])));
+             indices[n] = static_cast<typename LeafT::ValueType::IntType>(
+                 mPointList->offsetFromIndex(GA_Index{indices[n]}));
         }
     }
     PointArrayType const * const mPointList;
@@ -261,7 +270,7 @@ struct PackedMaskConstructor
 #endif
 
             GU_VDBPointList<openvdb::Vec3R>  points(*detailtouse);
-            openvdb::MaskGrid::Ptr grid = openvdb::tools::createPointMaskGrid(points, mXForm);
+            openvdb::MaskGrid::Ptr grid = openvdb::tools::createPointMask(points, mXForm);
             mMaskGrid->tree().topologyUnion(grid->tree());
         }
     }
@@ -308,10 +317,19 @@ getPackedPrimitiveOffsets(const GU_Detail& detail, std::vector<const GA_Primitiv
 ////////////////////////////////////////
 
 
-/// @brief Utility method to change point indices into Houdini geometry offsets
-/// @note PointIndexGrid's that store Houdini geometry offsets are not
-///       safe to write to disk, offsets are not guaranteed to be immutable
-///       under defragmentation operations or I/O.
+/// @brief    Utility method to construct a GU_VDBPointList.
+/// @details  The GU_VDBPointList is compatible with the PointIndexGrid and ParticleAtals structures.
+inline GU_VDBPointList<openvdb::Vec3s>::Ptr
+GUvdbCreatePointList(const GU_Detail& detail, const GA_PointGroup* pointGroup = NULL)
+{
+    return GU_VDBPointList<openvdb::Vec3s>::create(detail, pointGroup);
+}
+
+
+/// @brief  Utility method to change point indices into Houdini geometry offsets.
+/// @note   PointIndexGrid's that store Houdini geometry offsets are not
+///         safe to write to disk, offsets are not guaranteed to be immutable
+///         under defragmentation operations or I/O.
 template<typename PointIndexTreeType, typename PointArrayType>
 inline void
 GUvdbConvertIndexToOffset(PointIndexTreeType& tree, const PointArrayType& points)
@@ -321,7 +339,8 @@ GUvdbConvertIndexToOffset(PointIndexTreeType& tree, const PointArrayType& points
 }
 
 
-/// Utility method to construct a PointIndexGrid
+/// @brief    Utility method to construct a PointIndexGrid.
+/// @details  The PointIndexGrid supports fast spatial queries for points.
 inline openvdb::tools::PointIndexGrid::Ptr
 GUvdbCreatePointIndexGrid(
     const openvdb::math::Transform& xform,
@@ -333,7 +352,35 @@ GUvdbCreatePointIndexGrid(
 }
 
 
-/// Utility method to construct a boolean PointMaskGrid
+/// @brief    Utility method to construct a PointIndexGrid.
+/// @details  The PointIndexGrid supports fast spatial queries for points.
+template<typename PointArrayType>
+inline openvdb::tools::PointIndexGrid::Ptr
+GUvdbCreatePointIndexGrid(const openvdb::math::Transform& xform, const PointArrayType& points)
+{
+    return openvdb::tools::createPointIndexGrid<openvdb::tools::PointIndexGrid>(points, xform);
+}
+
+
+/// @brief    Utility method to construct a ParticleAtals.
+/// @details  The ParticleAtals supports fast spatial queries for particles.
+template<typename ParticleArrayType>
+inline openvdb::tools::ParticleIndexAtlas::Ptr
+GUvdbCreateParticleAtlas(const double minVoxelSize, const ParticleArrayType& particles)
+{
+    typedef openvdb::tools::ParticleIndexAtlas ParticleIndexAtlas;
+    ParticleIndexAtlas::Ptr atlas(new ParticleIndexAtlas());
+
+    if (particles.hasRadius()) {
+        atlas->construct(particles, minVoxelSize);
+    }
+
+    return atlas;
+}
+
+
+/// @brief    Utility method to construct a boolean PointMaskGrid
+/// @details  This method supports packed points.
 inline openvdb::MaskGrid::Ptr
 GUvdbCreatePointMaskGrid(
     const openvdb::math::Transform& xform,
@@ -354,16 +401,16 @@ GUvdbCreatePointMaskGrid(
 #endif
 
     GU_VDBPointList<openvdb::Vec3R> points( detail, pointGroup );
-    return openvdb::tools::createPointMaskGrid( points, xform );
+    return openvdb::tools::createPointMask( points, xform );
 }
 
 
 /// @brief  Utility method to construct a PointIndexGrid that stores
 ///         Houdini geometry offsets.
 ///
-/// @note PointIndexGrid's that store Houdini geometry offsets are not
-///       safe to write to disk, offsets are not guaranteed to be immutable
-///       under defragmentation operations or I/O.
+/// @note  PointIndexGrid's that store Houdini geometry offsets are not
+///        safe to write to disk, offsets are not guaranteed to be immutable
+///        under defragmentation operations or I/O.
 inline openvdb::tools::PointIndexGrid::Ptr
 GUvdbCreatePointOffsetGrid(
     const openvdb::math::Transform& xform,
@@ -381,8 +428,8 @@ GUvdbCreatePointOffsetGrid(
 }
 
 
-#endif // __GU_VDBPOINTTOOLS_H_HAS_BEEN_INCLUDED__
+#endif // GU_VDBPOINTTOOLS_H_HAS_BEEN_INCLUDED
 
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

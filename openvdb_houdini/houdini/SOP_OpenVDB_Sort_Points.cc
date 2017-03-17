@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 //
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
@@ -174,8 +174,13 @@ SOP_OpenVDB_Sort_Points::cookMySop(OP_Context& context)
             UT_String groupStr;
             evalString(groupStr, "pointgroup", 0, time);
 
+#if (UT_MAJOR_VERSION_INT >= 15)
+            const GA_PointGroup* pointGroup =
+                parsePointGroups(groupStr, GroupCreator(srcGeo));
+#else
             const GA_PointGroup* pointGroup =
                 parsePointGroups(groupStr, const_cast<GU_Detail*>(srcGeo));
+#endif
 
             const fpreal voxelSize = evalFloat("binsize", 0, time);
             const openvdb::math::Transform::Ptr transform =
@@ -201,7 +206,7 @@ SOP_OpenVDB_Sort_Points::cookMySop(OP_Context& context)
         for (size_t n = 0; n < numPoints; ++n) gdp->appendPointOffset();
 #endif
 
-        gdp->cloneMissingAttributes(*srcGeo, GA_ATTRIB_POINT, GA_AttributeFilter::selectAll());
+        gdp->cloneMissingAttributes(*srcGeo, GA_ATTRIB_POINT, GA_AttributeFilter::selectPublic());
 
         GA_PointWrangler ptWrangler(*gdp, *srcGeo,  GA_PointWrangler::INCLUDE_P);
 
@@ -217,7 +222,6 @@ SOP_OpenVDB_Sort_Points::cookMySop(OP_Context& context)
     return error();
 }
 
-
-// Copyright (c) 2012-2015 DreamWorks Animation LLC
+// Copyright (c) 2012-2017 DreamWorks Animation LLC
 // All rights reserved. This software is distributed under the
 // Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
