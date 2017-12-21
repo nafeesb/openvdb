@@ -42,10 +42,12 @@
 #                       and the SOPs into HOUDINI_DESTDIR
 #   clean               delete generated files from the local directory
 #   depend              recompute source file header dependencies
+#   header_test         check for missing or indirectly included headers
 #
 # Options:
-#   abi=3               build for compatibility with the OpenVDB 3.x Grid ABI
-#                       (some OpenVDB 4.x features will be disabled)
+#   abi=N               build for compatibility with version N of the
+#                       OpenVDB Grid ABI, where N is 2, 3, 4, etc.
+#                       (some newer features will be disabled)
 #   shared=no           link executables against static OpenVDB libraries
 #                       (default: link against shared libraries)
 #   debug=yes           build with debugging symbols and without optimization
@@ -59,10 +61,11 @@
 #
 # Note that the OpenVDB library and these Houdini tools must be built
 # against compatible versions of the Boost, OpenEXR and TBB libraries.
-# Fortunately, all three are included in the Houdini HDK, so the relevant
+# Until Houdini 16.5, all three were included in the HDK, so the relevant
 # variables below point by default to the HDK library and header directories:
 # $(HDSO) and $(HT)/include, respectively.  (Source the houdini_setup script
-# to set those two environment variables.)
+# to set those two environment variables.)  Beginning with Houdini 16.5,
+# you must provide your own distribution of Boost.
 #
 
 ifeq (,$(HFS))
@@ -75,13 +78,16 @@ endif
 # library makefile)
 DESTDIR := /tmp/OpenVDB
 
+# The directory into which to install libraries (e.g., for Linux multiarch support)
+DESTDIR_LIB_DIR := $(DESTDIR)/lib
+
 # The directory into which to install Houdini SOPs
 HOUDINI_DESTDIR := $(HIH)/dso
 
 # The parent directory of the openvdb/ header directory
 OPENVDB_INCL_DIR := $(DESTDIR)/include
 # The directory containing libopenvdb
-OPENVDB_LIB_DIR := $(DESTDIR)/lib
+OPENVDB_LIB_DIR := $(DESTDIR_LIB_DIR)
 OPENVDB_LIB := -lopenvdb
 
 # The parent directory of the boost/ header directory
@@ -185,9 +191,12 @@ ifeq (yes,$(has_log4cplus))
     CXXFLAGS += -DOPENVDB_USE_LOG4CPLUS
     HCUSTOM_EXTRA_CFLAGS += -DOPENVDB_USE_LOG4CPLUS
 endif
-ifeq (3,$(strip $(abi)))
-    CXXFLAGS += -DOPENVDB_3_ABI_COMPATIBLE
-    HCUSTOM_EXTRA_CFLAGS += -DOPENVDB_3_ABI_COMPATIBLE
+abi := $(strip $(abi))
+ifneq (,$(abi))
+    CXXFLAGS += -DOPENVDB_3_ABI_COMPATIBLE  # TODO: deprecated
+    CXXFLAGS += -DOPENVDB_ABI_VERSION_NUMBER=$(abi)
+    HCUSTOM_EXTRA_CFLAGS += -DOPENVDB_3_ABI_COMPATIBLE  # TODO: deprecated
+    HCUSTOM_EXTRA_CFLAGS += -DOPENVDB_ABI_VERSION_NUMBER=$(abi)
 endif
 ifdef MBSD
     # Darwin ld treats undefined symbols as errors by default;
@@ -233,6 +242,7 @@ LIBHOUDINI_INCLUDE_NAMES := \
     houdini/ParmFactory.h \
     houdini/PointUtils.h \
     houdini/SOP_NodeVDB.h \
+    houdini/SOP_VDBVerbUtils.h \
     houdini/UT_VDBTools.h \
     houdini/UT_VDBUtils.h \
     houdini/Utils.h \
@@ -266,6 +276,7 @@ HOUDINI_SOP_SRC_NAMES := \
     houdini/SOP_OpenVDB_Combine.cc \
     houdini/SOP_OpenVDB_Convert.cc \
     houdini/SOP_OpenVDB_Create.cc \
+    houdini/SOP_OpenVDB_Densify.cc \
     houdini/SOP_OpenVDB_Diagnostics.cc \
     houdini/SOP_OpenVDB_Fill.cc \
     houdini/SOP_OpenVDB_Filter.cc \
@@ -280,7 +291,9 @@ HOUDINI_SOP_SRC_NAMES := \
     houdini/SOP_OpenVDB_Occlusion_Mask.cc \
     houdini/SOP_OpenVDB_Platonic.cc \
     houdini/SOP_OpenVDB_Points_Convert.cc \
+    houdini/SOP_OpenVDB_Points_Delete.cc \
     houdini/SOP_OpenVDB_Points_Group.cc \
+    houdini/SOP_OpenVDB_Potential_Flow.cc \
     houdini/SOP_OpenVDB_Prune.cc \
     houdini/SOP_OpenVDB_Rasterize_Points.cc \
     houdini/SOP_OpenVDB_Ray.cc \
@@ -384,7 +397,7 @@ ALL_TARGETS := \
 
 .SUFFIXES: .o .cc
 
-.PHONY: all clean depend houdinisops mantradsos houdinilib install_lib install
+.PHONY: all clean depend header_test houdinisops mantradsos houdinilib install_lib install
 
 .cc.o:
 	@echo "Building $@ because of $(call list_deps)"
@@ -500,14 +513,14 @@ install: houdinilib houdinisops mantradsos
 	    $(DESTDIR)/include/houdini_utils/
 	@echo "Copied header files to $(DESTDIR)/include"
 	@#
-	mkdir -p $(DESTDIR)/lib
-	@echo "Created $(DESTDIR)/lib/"
-	cp -f $(LIBHOUDINI) $(DESTDIR)/lib
-	pushd $(DESTDIR)/lib > /dev/null; \
+	mkdir -p $(DESTDIR_LIB_DIR)
+	@echo "Created $(DESTDIR_LIB_DIR)"
+	cp -f $(LIBHOUDINI) $(DESTDIR_LIB_DIR)
+	pushd $(DESTDIR_LIB_DIR) > /dev/null; \
 	    if [ -f $(LIBHOUDINI_SHARED) ]; then \
 	        ln -f -s $(LIBHOUDINI_SHARED) $(LIBHOUDINI_NAME).so; fi; \
 	    popd > /dev/null
-	@echo "Copied libopenvdb_houdini to $(DESTDIR)/lib/"
+	@echo "Copied libopenvdb_houdini to $(DESTDIR_LIB_DIR)"
 
 install: install_lib houdinisops
 
@@ -524,6 +537,15 @@ $(DEPEND): $(ALL_INCLUDE_FILES) $(ALL_SRC_FILES)
 	done
 
 depend: $(DEPEND)
+
+# Compile an implicit translation unit for each header to identify any indirect includes
+HEADER_TEST_FILES := $(addprefix header_test-,$(LIBHOUDINI_INCLUDE_NAMES))
+$(HEADER_TEST_FILES): header_test-%: openvdb_houdini houdini_utils
+	echo "#include \"$*\"" | $(CXX) -c -x c++ $(CXXFLAGS) $(HOUDINI_CXXFLAGS) \
+	    -isystem $(HOUDINI_INCL_DIR) -fPIC -o /dev/null -
+echo_header_test:
+	@echo "Checking for missing or indirectly included headers"
+header_test: echo_header_test $(HEADER_TEST_FILES)
 
 clean:
 	$(RM) $(ALL_TARGETS) $(DEPEND)

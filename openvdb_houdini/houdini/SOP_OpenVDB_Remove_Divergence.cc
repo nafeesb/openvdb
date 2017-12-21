@@ -44,6 +44,7 @@
 
 #include <UT/UT_Interrupt.h>
 #include <UT/UT_StringArray.h>
+#include <UT/UT_Version.h>
 #include <GU/GU_Detail.h>
 #include <PRM/PRM_Parm.h>
 #include <GA/GA_Handle.h>
@@ -53,6 +54,14 @@
 #include <tbb/parallel_for.h>
 
 #include <sstream>
+#include <string>
+#include <vector>
+
+#if UT_MAJOR_VERSION_INT >= 16
+#define VDB_COMPILABLE_SOP 1
+#else
+#define VDB_COMPILABLE_SOP 0
+#endif
 
 
 namespace hvdb = openvdb_houdini;
@@ -80,8 +89,14 @@ struct SOP_OpenVDB_Remove_Divergence: public hvdb::SOP_NodeVDB
 
     int isRefInput(unsigned input) const override { return (input > 0); }
 
+#if VDB_COMPILABLE_SOP
+    class Cache: public SOP_VDBCacheOptions { OP_ERROR cookVDBSop(OP_Context&) override; };
+#else
 protected:
-    OP_ERROR cookMySop(OP_Context&) override;
+    OP_ERROR cookVDBSop(OP_Context&) override;
+#endif
+
+protected:
     bool updateParmsFlags() override;
 };
 
@@ -152,17 +167,14 @@ newSopOperator(OP_OperatorTable* table)
         .setDefault(PRMzeroDefaults)
         .setTypeExtended(PRM_TYPE_TOGGLE_JOIN));
 
-    {
-        char const * const items[] = {
+    parms.add(hutil::ParmFactory(PRM_STRING, "collidertype", "Collider Type")
+        .setChoiceListItems(PRM_CHOICELIST_SINGLE, {
             "bbox",    "Bounding Box",
             "static",  "Static VDB",
-            "dynamic", "Dynamic VDB",
-            nullptr
-        };
-        parms.add(hutil::ParmFactory(PRM_STRING, "collidertype", "Collider Type")
-            .setChoiceListItems(PRM_CHOICELIST_SINGLE, items)
-            .setDefault("bbox")
-            .setTooltip(
+            "dynamic", "Dynamic VDB"
+        })
+        .setDefault("bbox")
+        .setTooltip(
 "Bounding Box:\n"
 "    Use the bounding box of any reference geometry as the collider.\n"
 "Static VDB:\n"
@@ -171,8 +183,7 @@ newSopOperator(OP_OperatorTable* table)
 "    If the named VDB volume is vector-valued, treat the values of active voxels\n"
 "    as velocities of moving obstacles; otherwise, treat the active voxels as\n"
 "    stationary obstacles."
-            ));
-    }
+        ));
 
     parms.add(hutil::ParmFactory(PRM_STRING, "collider", "Collider")
         .setChoiceList(&hutil::PrimGroupMenuInput2)
@@ -197,6 +208,10 @@ newSopOperator(OP_OperatorTable* table)
         SOP_OpenVDB_Remove_Divergence::factory, parms, *table)
         .addInput("Velocity field VDBs")
         .addOptionalInput("Optional collider VDB or geometry")
+#if VDB_COMPILABLE_SOP
+        .setVerb(SOP_NodeVerb::COOK_INPLACE,
+            []() { return new SOP_OpenVDB_Remove_Divergence::Cache; })
+#endif
         .setDocumentation("\
 #icon: COMMON/openvdb\n\
 #tags: vdb\n\
@@ -240,13 +255,11 @@ SOP_OpenVDB_Remove_Divergence::updateParmsFlags()
 {
     bool changed = false;
     const bool useCollider = evalInt("usecollider", 0, 0);
-    UT_String colliderTypeStr;
-    evalString(colliderTypeStr, "collidertype", 0, 0);
     changed |= enableParm("collidertype", useCollider);
     changed |= enableParm("invertcollider", useCollider);
-    changed |= enableParm("collider", useCollider && (colliderTypeStr != "bbox"));
-    changed |= enableParm("iterations", evalInt("useiterations", 0, 0));
-    changed |= enableParm("tolerance", evalInt("usetolerance", 0, 0));
+    changed |= enableParm("collider", useCollider && (evalStdString("collidertype", 0) != "bbox"));
+    changed |= enableParm("iterations", bool(evalInt("useiterations", 0, 0)));
+    changed |= enableParm("tolerance", bool(evalInt("usetolerance", 0, 0)));
     return changed;
 }
 
@@ -835,7 +848,7 @@ processGrid(SolverParms& parms)
 /// where N is the primitive's index and NAME is the grid name.
 /// @todo Use the VdbPrimCIterator method once it is adopted into the HDK.
 inline UT_String
-getPrimitiveIndexAndName(const hvdb::GU_PrimVDB* prim)
+getPrimitiveIndexAndName(const GU_PrimVDB* prim)
 {
     UT_String result(UT_String::ALWAYS_DEEP);
     if (prim != nullptr) {
@@ -863,11 +876,15 @@ joinNames(UT_StringArray& names, const char* lastSep = " and ", const char* sep 
 
 
 OP_ERROR
-SOP_OpenVDB_Remove_Divergence::cookMySop(OP_Context& context)
+VDB_NODE_OR_CACHE(VDB_COMPILABLE_SOP, SOP_OpenVDB_Remove_Divergence)::cookVDBSop(
+    OP_Context& context)
 {
     try {
+#if !VDB_COMPILABLE_SOP
         hutil::ScopedInputLock lock(*this, context);
+        lock.markInputUnlocked(0);
         duplicateSourceStealable(0, context);
+#endif
 
         const GU_Detail* colliderGeo = inputGeo(1);
 
@@ -890,9 +907,7 @@ SOP_OpenVDB_Remove_Divergence::cookMySop(OP_Context& context)
         const bool outputPressure = evalInt("pressure", 0, time);
 
         const bool useCollider = evalInt("usecollider", 0, time);
-
-        UT_String colliderTypeStr;
-        evalString(colliderTypeStr, "collidertype", 0, time);
+        const auto colliderTypeStr = evalStdString("collidertype", time);
 
         UT_StringArray xformMismatchGridNames, nonuniformGridNames;
 
@@ -982,13 +997,13 @@ SOP_OpenVDB_Remove_Divergence::cookMySop(OP_Context& context)
 
             if (interrupter.wasInterrupted()) break;
 
-            parms.velocityGrid = vdbIt->getGridPtr();
-            const UT_VDBType velocityType = UTvdbGetGridType(*parms.velocityGrid);
-
+            const UT_VDBType velocityType = vdbIt->getStorageType();
             if (velocityType == UT_VDB_VEC3F || velocityType == UT_VDB_VEC3D) {
                 // Found a vector-valued input grid.
                 ++numGridsProcessed;
-                vdbIt->makeGridUnique();
+
+                vdbIt->makeGridUnique(); // ensure that the grid's tree is not shared
+                parms.velocityGrid = vdbIt->getGridPtr();
 
                 const openvdb::math::Transform& xform = parms.velocityGrid->constTransform();
 
@@ -1026,6 +1041,7 @@ SOP_OpenVDB_Remove_Divergence::cookMySop(OP_Context& context)
                         << " with error " << parms.outputState.absoluteError;
                 }
             }
+            parms.velocityGrid.reset();
         }
 
         if (!interrupter.wasInterrupted()) {
