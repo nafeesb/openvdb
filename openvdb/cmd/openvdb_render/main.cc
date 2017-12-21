@@ -43,11 +43,11 @@
 #include <vector>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/split.hpp>
-#include <OpenEXR/ImfChannelList.h>
 #include <OpenEXR/ImfFrameBuffer.h>
 #include <OpenEXR/ImfHeader.h>
 #include <OpenEXR/ImfOutputFile.h>
 #include <OpenEXR/ImfPixelType.h>
+#include <OpenEXR/ImfChannelList.h>
 #include <tbb/task_scheduler_init.h>
 #include <tbb/tick_count.h>
 #include <openvdb/openvdb.h>
