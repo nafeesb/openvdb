@@ -1,32 +1,5 @@
-///////////////////////////////////////////////////////////////////////////
-//
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-//
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-//
-// Redistributions of source code must retain the above copyright
-// and license notice and the following restrictions and disclaimer.
-//
-// *     Neither the name of DreamWorks Animation nor the names of
-// its contributors may be used to endorse or promote products derived
-// from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-// LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
-//
-///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the OpenVDB Project
+// SPDX-License-Identifier: MPL-2.0
 
 #include <set>
 #include <cppunit/extensions/HelperMacros.h>
@@ -228,43 +201,43 @@ TestLeafBool::testEquivalence()
     {
         LeafType leaf(Coord(0, 0, 0), false); // false and inactive
         LeafType leaf2(Coord(0, 0, 0), true); // true and inactive
-        
+
         CPPUNIT_ASSERT(leaf != leaf2);
-        
+
         leaf.fill(CoordBBox(Coord(0), Coord(LeafType::DIM - 1)), true, /*active=*/false);
         CPPUNIT_ASSERT(leaf == leaf2); // true and inactive
-        
+
         leaf.setValuesOn(); // true and active
-        
+
         leaf2.fill(CoordBBox(Coord(0), Coord(LeafType::DIM - 1)), false); // false and active
         CPPUNIT_ASSERT(leaf != leaf2);
-        
+
         leaf.negate(); // false and active
         CPPUNIT_ASSERT(leaf == leaf2);
-        
+
         // Set some values.
         leaf.setValueOn(Coord(0, 0, 0), true);
         leaf.setValueOn(Coord(0, 1, 0), true);
         leaf.setValueOn(Coord(1, 1, 0), true);
         leaf.setValueOn(Coord(1, 1, 2), true);
-        
+
         leaf2.setValueOn(Coord(0, 0, 0), true);
         leaf2.setValueOn(Coord(0, 1, 0), true);
         leaf2.setValueOn(Coord(1, 1, 0), true);
         leaf2.setValueOn(Coord(1, 1, 2), true);
-        
+
         CPPUNIT_ASSERT(leaf == leaf2);
-        
+
         leaf2.setValueOn(Coord(0, 0, 1), true);
-        
+
         CPPUNIT_ASSERT(leaf != leaf2);
-        
+
         leaf2.setValueOff(Coord(0, 0, 1), false);
-        
+
         CPPUNIT_ASSERT(leaf != leaf2);
-        
+
         leaf2.setValueOn(Coord(0, 0, 1));
-        
+
         CPPUNIT_ASSERT(leaf == leaf2);
     }
     {// test LeafNode<bool>::operator==()
@@ -279,7 +252,7 @@ TestLeafBool::testEquivalence()
         CPPUNIT_ASSERT(leaf2 != leaf4);
         CPPUNIT_ASSERT(leaf3 != leaf4);
     }
-        
+
 }
 
 
@@ -542,7 +515,7 @@ TestLeafBool::testMedian()
     using namespace openvdb;
     LeafType leaf(openvdb::Coord(0, 0, 0), /*background=*/false);
     bool state = false;
-    
+
     CPPUNIT_ASSERT_EQUAL(Index(0), leaf.medianOn(state));
     CPPUNIT_ASSERT(state == false);
     CPPUNIT_ASSERT_EQUAL(leaf.numValues(), leaf.medianOff(state));
@@ -562,7 +535,7 @@ TestLeafBool::testMedian()
     CPPUNIT_ASSERT_EQUAL(leaf.numValues()-2, leaf.medianOff(state));
     CPPUNIT_ASSERT(state == false);
     CPPUNIT_ASSERT(!leaf.medianAll());
-    
+
     leaf.setValue(Coord(5,0,1), true);
     CPPUNIT_ASSERT_EQUAL(Index(3), leaf.medianOn(state));
     CPPUNIT_ASSERT(state == false);
@@ -631,7 +604,3 @@ TestLeafBool::testMedian()
 //     // since the active voxels were all true to begin with.
 //     CPPUNIT_ASSERT(tree->hasSameTopology(*copyOfTree));
 // }
-
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

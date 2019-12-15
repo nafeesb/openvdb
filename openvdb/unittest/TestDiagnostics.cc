@@ -1,32 +1,5 @@
-///////////////////////////////////////////////////////////////////////////
-//
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-//
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-//
-// Redistributions of source code must retain the above copyright
-// and license notice and the following restrictions and disclaimer.
-//
-// *     Neither the name of DreamWorks Animation nor the names of
-// its contributors may be used to endorse or promote products derived
-// from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-// LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
-//
-///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the OpenVDB Project
+// SPDX-License-Identifier: MPL-2.0
 
 #include <cppunit/extensions/HelperMacros.h>
 
@@ -192,22 +165,22 @@ TestDiagnostics::testDiagnose()
 
     FloatGrid::Ptr gridSphere =
         tools::createLevelSetSphere<FloatGrid>(radius, center, voxelSize, width);
-        
+
     //gridSphere->print(std::cerr, 2);
-    
+
     {// Check min/max of active values
         math::Extrema ex = tools::extrema(gridSphere->cbeginValueOn());
         //std::cerr << "Min = " << ex.min() << " max = " << ex.max() << std::endl;
         CPPUNIT_ASSERT(ex.min() > -voxelSize*width);
         CPPUNIT_ASSERT(ex.max() <  voxelSize*width);
-        
+
     }
     {// Check min/max of all values
         math::Extrema ex = tools::extrema(gridSphere->cbeginValueAll());
         //std::cerr << "Min = " << ex.min() << " max = " << ex.max() << std::endl;
         CPPUNIT_ASSERT(ex.min() >= -voxelSize*width);
         CPPUNIT_ASSERT(ex.max() <=  voxelSize*width);
-        
+
     }
     {// check range of all values in a sphere w/o mask
         tools::CheckRange<FloatGrid, true, true, FloatGrid::ValueAllCIter> c(-gamma, gamma);
@@ -316,13 +289,13 @@ TestDiagnostics::testCheckLevelSet()
 
     FloatGrid::Ptr grid =
         tools::createLevelSetSphere<FloatGrid>(radius, center, voxelSize, width);
-    
+
     //tools::CheckLevelSet<FloatGrid> c(*grid);
     //std::string str = c.check();
     std::string str = tools::checkLevelSet(*grid);
     CPPUNIT_ASSERT(str.empty());
     //std::cerr << "\n" << str << std::endl;
-    
+
     grid->tree().setValue(Coord(0,0,0), voxelSize*(width+0.5f));
     //str = c.check();
     str = tools::checkLevelSet(*grid);
@@ -332,7 +305,7 @@ TestDiagnostics::testCheckLevelSet()
     //str = c.check(6);
     str = tools::checkLevelSet(*grid, 6);
     CPPUNIT_ASSERT(str.empty());
-    
+
 }// testCheckLevelSet
 
 void
@@ -346,7 +319,7 @@ TestDiagnostics::testCheckFogVolume()
     FloatGrid::Ptr grid =
         tools::createLevelSetSphere<FloatGrid>(radius, center, voxelSize, width);
     tools::sdfToFogVolume(*grid);
-    
+
     //tools::CheckFogVolume<FloatGrid> c(*grid);
     //std::string str = c.check();
     std::string str = tools::checkFogVolume(*grid);
@@ -362,7 +335,7 @@ TestDiagnostics::testCheckFogVolume()
     str = tools::checkFogVolume(*grid, 5);
     //str = c.check(5);
     CPPUNIT_ASSERT(str.empty());
-    
+
 }// testCheckFogVolume
 
 void
@@ -409,7 +382,3 @@ TestDiagnostics::testUniqueInactiveValues()
     CPPUNIT_ASSERT_EQUAL(1, int(values.size()));
     CPPUNIT_ASSERT(openvdb::math::isApproxEqual(values[0], 0.0f));
 }
-
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

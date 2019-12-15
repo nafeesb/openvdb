@@ -1,35 +1,9 @@
-///////////////////////////////////////////////////////////////////////////
-//
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-//
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-//
-// Redistributions of source code must retain the above copyright
-// and license notice and the following restrictions and disclaimer.
-//
-// *     Neither the name of DreamWorks Animation nor the names of
-// its contributors may be used to endorse or promote products derived
-// from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-// LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
-//
-///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the OpenVDB Project
+// SPDX-License-Identifier: MPL-2.0
 
 #include <cppunit/extensions/HelperMacros.h>
 #include <openvdb/points/AttributeArrayString.h>
+#include <openvdb/util/CpuTimer.h>
 
 #include <openvdb/openvdb.h>
 
@@ -49,6 +23,7 @@ public:
     CPPUNIT_TEST(testStringAttribute);
     CPPUNIT_TEST(testStringAttributeHandle);
     CPPUNIT_TEST(testStringAttributeWriteHandle);
+    CPPUNIT_TEST(testProfile);
 
     CPPUNIT_TEST_SUITE_END();
 
@@ -56,6 +31,7 @@ public:
     void testStringAttribute();
     void testStringAttributeHandle();
     void testStringAttributeWriteHandle();
+    void testProfile();
 
 }; // class TestAttributeArrayString
 
@@ -273,6 +249,8 @@ TestAttributeArrayString::testStringAttributeHandle()
 
     CPPUNIT_ASSERT_EQUAL(handle.size(), Index(4));
     CPPUNIT_ASSERT_EQUAL(handle.size(), attr.size());
+    CPPUNIT_ASSERT_EQUAL(Index(1), handle.stride());
+    CPPUNIT_ASSERT(handle.hasConstantStride());
 
     { // index 0 should always be an empty string
         Name value = handle.get(0);
@@ -343,6 +321,28 @@ TestAttributeArrayString::testStringAttributeHandle()
     { // cannot use a StringAttributeHandle with a non-string attribute
         TypedAttributeArray<float> invalidAttr(50);
         CPPUNIT_ASSERT_THROW(StringAttributeHandle(invalidAttr, metadata), TypeError);
+    }
+
+    // Test stride and hasConstantStride methods for string handles
+
+    {
+        StringAttributeArray attr(3, 2, true);
+        StringAttributeHandle handle(attr, metadata);
+
+        CPPUNIT_ASSERT_EQUAL(Index(3), handle.size());
+        CPPUNIT_ASSERT_EQUAL(handle.size(), attr.size());
+        CPPUNIT_ASSERT_EQUAL(Index(2), handle.stride());
+        CPPUNIT_ASSERT(handle.hasConstantStride());
+    }
+
+    {
+        StringAttributeArray attr(4, 10, false);
+        StringAttributeHandle handle(attr, metadata);
+
+        CPPUNIT_ASSERT_EQUAL(Index(10), handle.size());
+        CPPUNIT_ASSERT_EQUAL(Index(4), attr.size());
+        CPPUNIT_ASSERT_EQUAL(Index(1), handle.stride());
+        CPPUNIT_ASSERT(!handle.hasConstantStride());
     }
 }
 
@@ -461,6 +461,68 @@ TestAttributeArrayString::testStringAttributeWriteHandle()
     }
 }
 
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
+
+void
+TestAttributeArrayString::testProfile()
+{
+
+#ifdef PROFILE
+    struct Timer : public openvdb::util::CpuTimer {};
+    const size_t elements = 1000000;
+#else
+    struct Timer {
+        void start(const std::string&) {}
+        void stop() {}
+    };
+    const size_t elements = 10000;
+#endif
+
+    MetaMap metadata;
+    StringMetaInserter inserter(metadata);
+
+    Timer timer;
+    timer.start("StringMetaInserter initialise");
+
+    for (size_t i = 0; i < elements; ++i) {
+        inserter.insert("test_string_" + std::to_string(i));
+    }
+
+    timer.stop();
+
+    for (size_t i = 0; i < elements/2; ++i) {
+        metadata.removeMeta("test_string_" + std::to_string(i*2));
+    }
+
+    timer.start("StringMetaInserter resetCache()");
+
+    inserter.resetCache();
+
+    timer.stop();
+    timer.start("StringMetaInserter insert duplicates");
+
+    for (size_t i = 0; i < elements; ++i) {
+        inserter.insert("test_string_" + std::to_string(i));
+    }
+
+    timer.stop();
+
+    openvdb::points::StringAttributeArray attr(elements);
+    for (size_t i = 0; i < elements; ++i) {
+        attr.set(Index(i), Index(i));
+    }
+
+    timer.start("StringAttributeWriteHandle construction");
+
+    openvdb::points::StringAttributeWriteHandle handle(attr, metadata);
+
+    timer.stop();
+    timer.start("StringAttributeWriteHandle contains()");
+
+    // half the calls will miss caches
+    volatile bool result = false;
+    for (size_t i = 0; i < elements/2; ++i) {
+        result |= handle.contains("test_string_" + std::to_string(i*4));
+    }
+
+    timer.stop();
+}

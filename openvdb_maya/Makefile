@@ -1,28 +1,5 @@
-# Copyright (c) 2012-2018 DreamWorks Animation LLC
-#
-# All rights reserved. This software is distributed under the
-# Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-#
-# Redistributions of source code must retain the above copyright
-# and license notice and the following restrictions and disclaimer.
-#
-# *     Neither the name of DreamWorks Animation nor the names of
-# its contributors may be used to endorse or promote products derived
-# from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-# IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-# LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
+# Copyright Contributors to the OpenVDB Project
+# SPDX-License-Identifier: MPL-2.0
 #
 # Makefile for OpenVDB Maya plugins
 #
@@ -41,6 +18,8 @@
 #   bits=32|64          build for 32-bit or 64-bit environments (default: 64)
 #   debug=yes           build with debugging symbols and without optimization
 #   verbose=yes         run commands in verbose mode
+#   strict=yes          Enable a collection of pre defined compiler warnings
+#                       for GCC and clang
 
 
 #
@@ -187,6 +166,32 @@ ifdef MBSD
     CXXFLAGS += -undefined dynamic_lookup
 endif
 
+ifeq (yes,$(strip $(strict)))
+    USING_CLANG=$(shell ${CXX} --version | grep clang)
+    USING_GCC=$(shell ${CXX} --version | grep GCC)
+    ifneq (,$(USING_CLANG))
+        CXXFLAGS += \
+            -Werror \
+            -Wall \
+            -Wextra \
+            -Wconversion \
+            -Wno-sign-conversion \
+        #
+    else ifneq (,$(USING_GCC))
+        CXXFLAGS += \
+            -Werror \
+            -Wall \
+            -Wextra \
+            -pedantic \
+            -Wcast-align \
+            -Wcast-qual \
+            -Wconversion \
+            -Wdisabled-optimization \
+            -Woverloaded-virtual \
+        #
+    endif
+endif
+
 MAYA_LIBS := \
     -lOpenMayaFX \
     -lOpenMaya \
@@ -206,35 +211,35 @@ ifdef LINUX
 endif
 
 MAYA_SRC_NAMES := \
-    maya/OpenVDBCopyNode.cc \
-    maya/OpenVDBData.cc \
-    maya/OpenVDBFilterNode.cc \
-    maya/OpenVDBFromMayaFluidNode.cc \
-    maya/OpenVDBFromPolygonsNode.cc \
-    maya/OpenVDBPlugin.cc \
-    maya/OpenVDBReadNode.cc \
-    maya/OpenVDBToPolygonsNode.cc \
-    maya/OpenVDBTransformNode.cc \
-    maya/OpenVDBUtil.cc \
-    maya/OpenVDBVisualizeNode.cc \
-    maya/OpenVDBWriteNode.cc \
+    OpenVDBCopyNode.cc \
+    OpenVDBData.cc \
+    OpenVDBFilterNode.cc \
+    OpenVDBFromMayaFluidNode.cc \
+    OpenVDBFromPolygonsNode.cc \
+    OpenVDBPlugin.cc \
+    OpenVDBReadNode.cc \
+    OpenVDBToPolygonsNode.cc \
+    OpenVDBTransformNode.cc \
+    OpenVDBUtil.cc \
+    OpenVDBVisualizeNode.cc \
+    OpenVDBWriteNode.cc \
 #
 MAYA_INCLUDE_NAMES := \
-    maya/OpenVDBData.h \
-    maya/OpenVDBPlugin.h \
-    maya/OpenVDBUtil.h \
+    OpenVDBData.h \
+    OpenVDBPlugin.h \
+    OpenVDBUtil.h \
 #
 
 MAYA_SCRIPTS := \
-    maya/AEOpenVDBCopyTemplate.mel \
-    maya/AEOpenVDBFilterTemplate.mel \
-    maya/AEOpenVDBFromMayaFluidTemplate.mel \
-    maya/AEOpenVDBFromPolygonsTemplate.mel \
-    maya/AEOpenVDBReadTemplate.mel \
-    maya/AEOpenVDBToPolygonsTemplate.mel \
-    maya/AEOpenVDBTransformTemplate.mel \
-    maya/AEOpenVDBVisualizeTemplate.mel \
-    maya/AEOpenVDBWriteTemplate.mel \
+    AEOpenVDBCopyTemplate.mel \
+    AEOpenVDBFilterTemplate.mel \
+    AEOpenVDBFromMayaFluidTemplate.mel \
+    AEOpenVDBFromPolygonsTemplate.mel \
+    AEOpenVDBReadTemplate.mel \
+    AEOpenVDBToPolygonsTemplate.mel \
+    AEOpenVDBTransformTemplate.mel \
+    AEOpenVDBVisualizeTemplate.mel \
+    AEOpenVDBWriteTemplate.mel \
 #
 
 ALL_INCLUDE_FILES := \
@@ -269,10 +274,9 @@ ALL_TARGETS := \
 
 all: $(ALL_TARGETS)
 
-# Create an openvdb_maya/ symlink to the maya/ subdirectory,
-# to mirror the DWA directory structure.
+# Create an openvdb_maya/ symlink to this directory, to mirror the DWA directory structure.
 openvdb_maya:
-	ln -f -s maya openvdb_maya
+	ln -f -s . openvdb_maya
 openvdb_maya/OpenVDBData.h openvdb_maya/OpenVDBUtil.h: openvdb_maya
 
 $(MAYA_OBJ_NAMES): openvdb_maya/OpenVDBData.h openvdb_maya/OpenVDBUtil.h
@@ -319,7 +323,3 @@ clean:
 ifneq (,$(strip $(wildcard $(DEPEND))))
     include $(DEPEND)
 endif
-
-# Copyright (c) 2012-2018 DreamWorks Animation LLC
-# All rights reserved. This software is distributed under the
-# Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

@@ -1,32 +1,5 @@
-///////////////////////////////////////////////////////////////////////////
-//
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-//
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-//
-// Redistributions of source code must retain the above copyright
-// and license notice and the following restrictions and disclaimer.
-//
-// *     Neither the name of DreamWorks Animation nor the names of
-// its contributors may be used to endorse or promote products derived
-// from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-// LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
-//
-///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the OpenVDB Project
+// SPDX-License-Identifier: MPL-2.0
 //
 /// @file pyGrid.h
 /// @author Peter Cucka
@@ -62,6 +35,7 @@
 #include "openvdb/openvdb.h"
 #include "openvdb/io/Stream.h"
 #include "openvdb/math/Math.h" // for math::isExactlyEqual()
+#include "openvdb/points/PointDataGrid.h"
 #include "openvdb/tools/LevelSetSphere.h"
 #include "openvdb/tools/Dense.h"
 #include "openvdb/tools/ChangeBackground.h"
@@ -114,6 +88,7 @@ getPyObjectFromGrid(const GridBase::Ptr& grid)
     CONVERT_BASE_TO_GRID(Int64Grid, grid);
     CONVERT_BASE_TO_GRID(Vec3IGrid, grid);
     CONVERT_BASE_TO_GRID(Vec3DGrid, grid);
+    CONVERT_BASE_TO_GRID(points::PointDataGrid, grid);
 #endif
 #undef CONVERT_BASE_TO_GRID
 
@@ -143,6 +118,7 @@ getGridFromPyObject(const boost::python::object& gridObj)
     CONVERT_GRID_TO_BASE(Int64Grid::Ptr);
     CONVERT_GRID_TO_BASE(Vec3IGrid::Ptr);
     CONVERT_GRID_TO_BASE(Vec3DGrid::Ptr);
+    CONVERT_GRID_TO_BASE(points::PointDataGrid::Ptr);
 #endif
 #undef CONVERT_GRID_TO_BASE
 
@@ -1063,6 +1039,12 @@ protected:
         }
     }
 
+#ifdef __clang__
+    // Suppress "enum value not explicitly handled" warnings
+    PRAGMA(clang diagnostic push)
+    PRAGMA(clang diagnostic ignored "-Wswitch-enum")
+#endif
+
     void copyFromArray() const override
     {
         switch (this->mArrayTypeId) {
@@ -1092,6 +1074,11 @@ protected:
         default: throw openvdb::TypeError(); break;
         }
     }
+
+#ifdef __clang__
+    PRAGMA(clang diagnostic pop)
+#endif
+
 }; // class CopyOp
 
 // Specialization for Vec3 grids
@@ -1125,6 +1112,12 @@ protected:
             boost::python::throw_error_already_set();
         }
     }
+
+#ifdef __clang__
+    // Suppress "enum value not explicitly handled" warnings
+    PRAGMA(clang diagnostic push)
+    PRAGMA(clang diagnostic ignored "-Wswitch-enum")
+#endif
 
     void copyFromArray() const override
     {
@@ -1171,6 +1164,11 @@ protected:
         default: throw openvdb::TypeError(); break;
         }
     }
+
+#ifdef __clang__
+    PRAGMA(clang diagnostic pop)
+#endif
+
 }; // class CopyOp
 
 
@@ -1194,6 +1192,28 @@ copyToArray(GridType& grid, py::object arrayObj, py::object coordObj)
         op(/*toGrid=*/false, grid, arrayObj, coordObj);
     op();
 }
+
+
+template<>
+inline void
+copyFromArray(points::PointDataGrid& /*grid*/, py::object /*arrayObj*/,
+    py::object /*coordObj*/, py::object /*toleranceObj*/)
+{
+    PyErr_SetString(PyExc_NotImplementedError,
+        "copying NumPy arrays for PointDataGrids is not supported");
+    boost::python::throw_error_already_set();
+}
+
+
+template<>
+inline void
+copyToArray(points::PointDataGrid& /*grid*/, py::object /*arrayObj*/, py::object /*coordObj*/)
+{
+    PyErr_SetString(PyExc_NotImplementedError,
+        "copying NumPy arrays for PointDataGrids is not supported");
+    boost::python::throw_error_already_set();
+}
+
 
 #endif // defined(PY_OPENVDB_USE_NUMPY)
 
@@ -2503,11 +2523,14 @@ exportGrid()
 
             ; // py::class_<Grid>
 
-#if DWA_BOOST_VERSION >= 1060000 && DWA_BOOST_VERSION < 1065000
-        // Boost versions 1.60 through 1.6x, for some x < 5, require the GridPtr-to-Python
-        // object converter to be explicitly registered.
-        py::register_ptr_to_python<GridPtr>();
-#endif
+        // Register the GridPtr-to-Python object converter explicitly
+        // if it is not already implicitly registered.
+        try {
+            py::object testObj{GridPtr()};
+        } catch (py::error_already_set&) {
+            PyErr_Clear();
+            py::register_ptr_to_python<GridPtr>();
+        }
 
         py::implicitly_convertible<GridPtr, GridBase::Ptr>();
         py::implicitly_convertible<GridPtr, GridBase::ConstPtr>();
@@ -2541,7 +2564,3 @@ exportGrid()
 } // namespace pyGrid
 
 #endif // OPENVDB_PYGRID_HAS_BEEN_INCLUDED
-
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

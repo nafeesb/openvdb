@@ -1,32 +1,5 @@
-///////////////////////////////////////////////////////////////////////////
-//
-// Copyright (c) 2012-2019 DreamWorks Animation LLC
-//
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-//
-// Redistributions of source code must retain the above copyright
-// and license notice and the following restrictions and disclaimer.
-//
-// *     Neither the name of DreamWorks Animation nor the names of
-// its contributors may be used to endorse or promote products derived
-// from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-// LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
-//
-///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the OpenVDB Project
+// SPDX-License-Identifier: MPL-2.0
 
 #include <cppunit/extensions/HelperMacros.h>
 #include <openvdb/points/AttributeArray.h>
@@ -49,6 +22,7 @@
 #include <tbb/tick_count.h>
 #include <tbb/atomic.h>
 
+#include <cstdio> // for std::remove()
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -64,52 +38,16 @@ namespace boost { namespace interprocess { namespace detail {} namespace ipcdeta
 #include <sys/stat.h> // for stat()
 #endif
 
-/// @brief io::MappedFile has a private constructor, so this unit tests uses a matching proxy
-class ProxyMappedFile
+
+/// @brief io::MappedFile has a private constructor, so declare a class that acts as the friend
+class TestMappedFile
 {
 public:
-    explicit ProxyMappedFile(const std::string& filename)
-        : mImpl(new Impl(filename)) { }
-
-private:
-    class Impl
+    static openvdb::io::MappedFile::Ptr create(const std::string& filename)
     {
-    public:
-        Impl(const std::string& filename)
-            : mMap(filename.c_str(), boost::interprocess::read_only)
-            , mRegion(mMap, boost::interprocess::read_only)
-        {
-            mLastWriteTime = 0;
-            const char* regionFilename = mMap.get_name();
-#ifdef _MSC_VER
-            using namespace boost::interprocess::detail;
-            using namespace boost::interprocess::ipcdetail;
-            using openvdb::Index64;
-
-            if (void* fh = open_existing_file(regionFilename, boost::interprocess::read_only)) {
-                FILETIME mtime;
-                if (GetFileTime(fh, nullptr, nullptr, &mtime)) {
-                    mLastWriteTime = (Index64(mtime.dwHighDateTime) << 32) | mtime.dwLowDateTime;
-                }
-                close_file(fh);
-            }
-#else
-            struct stat info;
-            if (0 == ::stat(regionFilename, &info)) {
-                mLastWriteTime = openvdb::Index64(info.st_mtime);
-            }
-#endif
-        }
-
-        using Notifier = std::function<void(std::string /*filename*/)>;
-        boost::interprocess::file_mapping mMap;
-        boost::interprocess::mapped_region mRegion;
-        bool mAutoDelete = false;
-        Notifier mNotifier;
-        mutable tbb::atomic<openvdb::Index64> mLastWriteTime;
-    }; // class Impl
-    std::unique_ptr<Impl> mImpl;
-}; // class ProxyMappedFile
+        return openvdb::SharedPtr<openvdb::io::MappedFile>(new openvdb::io::MappedFile(filename));
+    }
+};
 
 
 /// @brief Functionality similar to openvdb::util::CpuTimer except with prefix padding and no decimals.
@@ -159,6 +97,14 @@ public:
 private:
     tbb::tick_count mT0;
 };// ProfileTimer
+
+
+struct ScopedFile
+{
+    explicit ScopedFile(const std::string& s): pathname(s) {}
+    ~ScopedFile() { if (!pathname.empty()) std::remove(pathname.c_str()); }
+    const std::string pathname;
+};
 
 
 using namespace openvdb;
@@ -413,6 +359,19 @@ TestAttributeArray::testAttributeArray()
             TypedAttributeArray<bool> typedAttr(size);
             AttributeArray& attr(typedAttr);
             CPPUNIT_ASSERT_EQUAL(Name("bool"), attr.valueType());
+            CPPUNIT_ASSERT_EQUAL(Name("null"), attr.codecType());
+            CPPUNIT_ASSERT_EQUAL(Index(1), attr.valueTypeSize());
+            CPPUNIT_ASSERT_EQUAL(Index(1), attr.storageTypeSize());
+            CPPUNIT_ASSERT(!attr.valueTypeIsFloatingPoint());
+            CPPUNIT_ASSERT(!attr.valueTypeIsClass());
+            CPPUNIT_ASSERT(!attr.valueTypeIsVector());
+            CPPUNIT_ASSERT(!attr.valueTypeIsQuaternion());
+            CPPUNIT_ASSERT(!attr.valueTypeIsMatrix());
+        }
+        {
+            TypedAttributeArray<int8_t> typedAttr(size);
+            AttributeArray& attr(typedAttr);
+            CPPUNIT_ASSERT_EQUAL(Name("int8"), attr.valueType());
             CPPUNIT_ASSERT_EQUAL(Name("null"), attr.codecType());
             CPPUNIT_ASSERT_EQUAL(Index(1), attr.valueTypeSize());
             CPPUNIT_ASSERT_EQUAL(Index(1), attr.storageTypeSize());
@@ -736,9 +695,6 @@ TestAttributeArray::testAttributeArray()
             CPPUNIT_ASSERT_EQUAL(attr.isUniform(), attrB.isUniform());
             CPPUNIT_ASSERT_EQUAL(attr.isTransient(), attrB.isTransient());
             CPPUNIT_ASSERT_EQUAL(attr.isHidden(), attrB.isHidden());
-            OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-            CPPUNIT_ASSERT_EQUAL(attr.isCompressed(), attrB.isCompressed());
-            OPENVDB_NO_DEPRECATION_WARNING_END
 
             for (unsigned i = 0; i < unsigned(count); ++i) {
                 CPPUNIT_ASSERT_EQUAL(attr.get(i), attrB.get(i));
@@ -759,67 +715,7 @@ TestAttributeArray::testAttributeArray()
         attr.set(1, 7);
         attr.set(2, 8);
         attr.set(6, 100);
-
-        // note that in-memory compression has been deprecated, verify all
-        // isCompressed() calls return false
-
-        OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-
-        CPPUNIT_ASSERT(!attr.isCompressed());
-
-        { // test compressed copy construction
-            attr.compress();
-
-            CPPUNIT_ASSERT(!attr.isCompressed());
-
-            AttributeArray::Ptr attrCopy = attr.copy();
-            AttributeArrayI& attrB(AttributeArrayI::cast(*attrCopy));
-
-            CPPUNIT_ASSERT(matchingNamePairs(attr.type(), attrB.type()));
-            CPPUNIT_ASSERT_EQUAL(attr.size(), attrB.size());
-            CPPUNIT_ASSERT_EQUAL(attr.memUsage(), attrB.memUsage());
-            CPPUNIT_ASSERT_EQUAL(attr.isUniform(), attrB.isUniform());
-            CPPUNIT_ASSERT_EQUAL(attr.isTransient(), attrB.isTransient());
-            CPPUNIT_ASSERT_EQUAL(attr.isHidden(), attrB.isHidden());
-            CPPUNIT_ASSERT_EQUAL(attr.isCompressed(), attrB.isCompressed());
-
-            for (unsigned i = 0; i < unsigned(count); ++i) {
-                CPPUNIT_ASSERT_EQUAL(attr.get(i), attrB.get(i));
-                CPPUNIT_ASSERT_EQUAL(attr.get(i), attrB.getUnsafe(i));
-                CPPUNIT_ASSERT_EQUAL(attr.getUnsafe(i), attrB.getUnsafe(i));
-            }
-        }
-
-        { // test compressed copy construction (uncompress on copy)
-            attr.compress();
-
-            CPPUNIT_ASSERT(!attr.isCompressed());
-
-            AttributeArray::Ptr attrCopy = attr.copyUncompressed();
-            AttributeArrayI& attrB(AttributeArrayI::cast(*attrCopy));
-
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
-            attr.decompress();
-
-            CPPUNIT_ASSERT(matchingNamePairs(attr.type(), attrB.type()));
-            CPPUNIT_ASSERT_EQUAL(attr.size(), attrB.size());
-            CPPUNIT_ASSERT_EQUAL(attr.memUsage(), attrB.memUsage());
-            CPPUNIT_ASSERT_EQUAL(attr.isUniform(), attrB.isUniform());
-            CPPUNIT_ASSERT_EQUAL(attr.isTransient(), attrB.isTransient());
-            CPPUNIT_ASSERT_EQUAL(attr.isHidden(), attrB.isHidden());
-            CPPUNIT_ASSERT_EQUAL(attr.isCompressed(), attrB.isCompressed());
-
-            for (unsigned i = 0; i < unsigned(count); ++i) {
-                CPPUNIT_ASSERT_EQUAL(attr.get(i), attrB.get(i));
-                CPPUNIT_ASSERT_EQUAL(attr.get(i), attrB.getUnsafe(i));
-                CPPUNIT_ASSERT_EQUAL(attr.getUnsafe(i), attrB.getUnsafe(i));
-            }
-        }
-
-        OPENVDB_NO_DEPRECATION_WARNING_END
     }
-
 
     { // Fixed codec (position range)
         AttributeArray::Ptr attr1(new AttributeArrayC(50));
@@ -929,19 +825,7 @@ TestAttributeArray::testAttributeArray()
         std::istringstream istr(ostr.str(), std::ios_base::binary);
         attrB.read(istr);
 
-        CPPUNIT_ASSERT(matchingNamePairs(attrA.type(), attrB.type()));
-        CPPUNIT_ASSERT_EQUAL(attrA.size(), attrB.size());
-        CPPUNIT_ASSERT_EQUAL(attrA.isUniform(), attrB.isUniform());
-        CPPUNIT_ASSERT_EQUAL(attrA.isTransient(), attrB.isTransient());
-        CPPUNIT_ASSERT_EQUAL(attrA.isHidden(), attrB.isHidden());
-        OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-        CPPUNIT_ASSERT_EQUAL(attrA.isCompressed(), attrB.isCompressed());
-        OPENVDB_NO_DEPRECATION_WARNING_END
-        CPPUNIT_ASSERT_EQUAL(attrA.memUsage(), attrB.memUsage());
-
-        for (unsigned i = 0; i < unsigned(count); ++i) {
-            CPPUNIT_ASSERT_EQUAL(attrA.get(i), attrB.get(i));
-        }
+        CPPUNIT_ASSERT(attrA == attrB);
 
         AttributeArrayI attrC(count, 3);
         attrC.setTransient(true);
@@ -949,12 +833,12 @@ TestAttributeArray::testAttributeArray()
         std::ostringstream ostrC(std::ios_base::binary);
         attrC.write(ostrC);
 
-        CPPUNIT_ASSERT_EQUAL(size_t(0), ostrC.str().size());
+        CPPUNIT_ASSERT(ostrC.str().empty());
 
         std::ostringstream ostrD(std::ios_base::binary);
         attrC.write(ostrD, /*transient=*/true);
 
-        CPPUNIT_ASSERT(ostrD.str().size() != size_t(0));
+        CPPUNIT_ASSERT(!ostrD.str().empty());
     }
 
     // Registry
@@ -1027,20 +911,18 @@ TestAttributeArray::testAttributeArrayCopy()
         targetTypedAttr.set(pair.second, sourceTypedAttr.get(pair.first));
     }
 
-    { // verify behaviour with slow virtual function
+#if OPENVDB_ABI_VERSION_NUMBER < 6
+    { // verify behaviour with slow virtual function (ABI<6)
         AttributeArrayD typedAttr(size);
         AttributeArray& attr(typedAttr);
 
-        OPENVDB_NO_DEPRECATION_WARNING_BEGIN
         for (const auto& pair : indexPairs) {
             attr.set(pair.second, sourceAttr, pair.first);
         }
-        OPENVDB_NO_DEPRECATION_WARNING_END
 
         CPPUNIT_ASSERT(targetAttr == attr);
     }
-
-#if OPENVDB_ABI_VERSION_NUMBER >= 6
+#else
     using AttributeArrayF = TypedAttributeArray<float>;
 
     { // use std::vector<std::pair<Index, Index>>::begin() as iterator to AttributeArray::copy()
@@ -1071,7 +953,8 @@ TestAttributeArray::testAttributeArrayCopy()
         TypedAttributeArray<half> targetTypedAttr1(size);
         AttributeArray& targetAttr1(targetTypedAttr1);
         for (Index i = 0; i < size; i++) {
-            targetTypedAttr1.set(i, sourceTypedAttr.get(i));
+            targetTypedAttr1.set(i,
+                io::RealToHalf<double>::convert(sourceTypedAttr.get(i)));
         }
 
         // truncated float array
@@ -1358,12 +1241,8 @@ TestAttributeArray::testAttributeHandle()
         CPPUNIT_ASSERT_EQUAL(Vec3f(10), handle.get(5));
     }
 
-    OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-
     {
         AttributeArray* array = attrSet.get(1);
-
-        array->compress();
 
         AttributeWriteHandle<float> handle(*array);
 
@@ -1371,40 +1250,12 @@ TestAttributeArray::testAttributeHandle()
 
         CPPUNIT_ASSERT_EQUAL(float(11), handle.get(6));
 
-        CPPUNIT_ASSERT(!array->isCompressed());
-
-        array->compress();
-
-        CPPUNIT_ASSERT(!array->isCompressed());
-
         {
             AttributeHandle<float> handleRO(*array);
 
-            CPPUNIT_ASSERT(!array->isCompressed());
-
             CPPUNIT_ASSERT_EQUAL(float(11), handleRO.get(6));
-
-            CPPUNIT_ASSERT(!array->isCompressed());
         }
-
-        CPPUNIT_ASSERT(!array->isCompressed());
-
-        {
-            AttributeHandle<float> handleRO(*array, /*preserveCompression=*/false);
-
-            // AttributeHandle uncompresses data on construction
-
-            CPPUNIT_ASSERT(!array->isCompressed());
-
-            CPPUNIT_ASSERT_EQUAL(float(11), handleRO.get(6));
-
-            CPPUNIT_ASSERT(!array->isCompressed());
-        }
-
-        CPPUNIT_ASSERT(!array->isCompressed());
     }
-
-    OPENVDB_NO_DEPRECATION_WARNING_END
 
     // check values have been correctly set without using handles
 
@@ -1532,6 +1383,25 @@ TestAttributeArray::testStrided()
         CPPUNIT_ASSERT_EQUAL(Index(1), handle.stride());
         CPPUNIT_ASSERT_EQUAL(array->dataSize(), handle.size());
     }
+
+    { // IO
+        const Index count = 50, total = 100;
+        AttributeArrayI attrA(count, total, /*constantStride=*/false);
+
+        for (unsigned i = 0; i < unsigned(total); ++i) {
+            attrA.set(i, int(i));
+        }
+
+        std::ostringstream ostr(std::ios_base::binary);
+        io::setDataCompression(ostr, io::COMPRESS_BLOSC);
+        attrA.write(ostr);
+
+        AttributeArrayI attrB;
+        std::istringstream istr(ostr.str(), std::ios_base::binary);
+        attrB.read(istr);
+
+        CPPUNIT_ASSERT(attrA == attrB);
+    }
 }
 
 void
@@ -1542,6 +1412,8 @@ TestAttributeArray::testDelayedLoad()
 
     AttributeArrayI::registerType();
     AttributeArrayF::registerType();
+
+    SharedPtr<io::MappedFile> mappedFile;
 
     io::StreamMetadata::Ptr streamMetadata(new io::StreamMetadata);
 
@@ -1600,10 +1472,7 @@ TestAttributeArray::testDelayedLoad()
             fileout.close();
         }
 
-        // abuse File being a friend of MappedFile to get around the private constructor
-
-        ProxyMappedFile* proxy = new ProxyMappedFile(filename);
-        SharedPtr<io::MappedFile> mappedFile(reinterpret_cast<io::MappedFile*>(proxy));
+        mappedFile = TestMappedFile::create(filename);
 
         // read in using delayed load and check manual loading of data
         {
@@ -1626,9 +1495,6 @@ TestAttributeArray::testDelayedLoad()
             CPPUNIT_ASSERT_EQUAL(attrA.isUniform(), attrB.isUniform());
             CPPUNIT_ASSERT_EQUAL(attrA.isTransient(), attrB.isTransient());
             CPPUNIT_ASSERT_EQUAL(attrA.isHidden(), attrB.isHidden());
-            OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-            CPPUNIT_ASSERT_EQUAL(attrA.isCompressed(), attrB.isCompressed());
-            OPENVDB_NO_DEPRECATION_WARNING_END
 
             AttributeArrayI attrBcopy(attrB);
             AttributeArrayI attrBequal = attrB;
@@ -1679,9 +1545,6 @@ TestAttributeArray::testDelayedLoad()
             CPPUNIT_ASSERT_EQUAL(attrA2.isUniform(), attrB2.isUniform());
             CPPUNIT_ASSERT_EQUAL(attrA2.isTransient(), attrB2.isTransient());
             CPPUNIT_ASSERT_EQUAL(attrA2.isHidden(), attrB2.isHidden());
-            OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-            CPPUNIT_ASSERT_EQUAL(attrA2.isCompressed(), attrB2.isCompressed());
-            OPENVDB_NO_DEPRECATION_WARNING_END
 
             AttributeArrayF attrB2copy(attrB2);
             AttributeArrayF attrB2equal = attrB2;
@@ -1836,17 +1699,6 @@ TestAttributeArray::testDelayedLoad()
             attrB.readPagedBuffers(inputStream);
 
             CPPUNIT_ASSERT(attrB.isOutOfCore());
-
-            OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
-            attrB.compress();
-
-            CPPUNIT_ASSERT(attrB.isOutOfCore());
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
-            OPENVDB_NO_DEPRECATION_WARNING_END
         }
 
         // read in using delayed load and check copy and assignment constructors
@@ -2020,10 +1872,7 @@ TestAttributeArray::testDelayedLoad()
             fileout.close();
         }
 
-        // abuse File being a friend of MappedFile to get around the private constructor
-
-        proxy = new ProxyMappedFile(filename);
-        mappedFile.reset(reinterpret_cast<io::MappedFile*>(proxy));
+        mappedFile = TestMappedFile::create(filename);
 
         // read in using delayed load and check fill()
         {
@@ -2080,10 +1929,7 @@ TestAttributeArray::testDelayedLoad()
             fileout.close();
         }
 
-        // abuse File being a friend of MappedFile to get around the private constructor
-
-        proxy = new ProxyMappedFile(filename);
-        mappedFile.reset(reinterpret_cast<io::MappedFile*>(proxy));
+        mappedFile = TestMappedFile::create(filename);
 
         // read in using delayed load and check fill()
         {
@@ -2114,9 +1960,6 @@ TestAttributeArray::testDelayedLoad()
             io::setStreamMetadataPtr(fileout, streamMetadata);
             io::setDataCompression(fileout, io::COMPRESS_BLOSC);
 
-            OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-            attrA.compress();
-            OPENVDB_NO_DEPRECATION_WARNING_END
             attrA.writeMetadata(fileout, false, /*paged=*/true);
 
             compression::PagedOutputStream outputStreamSize(fileout);
@@ -2131,10 +1974,7 @@ TestAttributeArray::testDelayedLoad()
             fileout.close();
         }
 
-        // abuse File being a friend of MappedFile to get around the private constructor
-
-        proxy = new ProxyMappedFile(filename);
-        mappedFile.reset(reinterpret_cast<io::MappedFile*>(proxy));
+        mappedFile = TestMappedFile::create(filename);
 
         // read in using delayed load and check manual loading of data
         {
@@ -2151,17 +1991,9 @@ TestAttributeArray::testDelayedLoad()
             inputStream.setSizeOnly(false);
             attrB.readPagedBuffers(inputStream);
 
-            OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
             CPPUNIT_ASSERT(attrB.isOutOfCore());
             attrB.loadData();
             CPPUNIT_ASSERT(!attrB.isOutOfCore());
-
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
-            OPENVDB_NO_DEPRECATION_WARNING_END
 
             CPPUNIT_ASSERT_EQUAL(attrA.memUsage(), attrB.memUsage());
 
@@ -2199,6 +2031,7 @@ TestAttributeArray::testDelayedLoad()
 
             { // attempting to write a partially-read AttributeArray throws
                 std::string filename = tempDir + "/openvdb_partial1";
+                ScopedFile f(filename);
                 std::ofstream fileout(filename.c_str(), std::ios_base::binary);
                 io::setStreamMetadataPtr(fileout, streamMetadata);
                 io::setDataCompression(fileout, io::COMPRESS_BLOSC);
@@ -2255,34 +2088,6 @@ TestAttributeArray::testDelayedLoad()
         }
 
 #ifdef OPENVDB_USE_BLOSC
-        // read in using delayed load and check no implicit load through compress()
-        {
-            AttributeArrayI attrB;
-
-            std::ifstream filein(filename.c_str(), std::ios_base::in | std::ios_base::binary);
-            io::setStreamMetadataPtr(filein, streamMetadata);
-            io::setMappedFilePtr(filein, mappedFile);
-
-            attrB.readMetadata(filein);
-            compression::PagedInputStream inputStream(filein);
-            inputStream.setSizeOnly(true);
-            attrB.readPagedBuffers(inputStream);
-            inputStream.setSizeOnly(false);
-            attrB.readPagedBuffers(inputStream);
-
-            OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-
-            CPPUNIT_ASSERT(attrB.isOutOfCore());
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
-            attrB.compress();
-
-            CPPUNIT_ASSERT(attrB.isOutOfCore());
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
-            OPENVDB_NO_DEPRECATION_WARNING_END
-        }
-
         // read in using delayed load and check copy and assignment constructors
         {
             AttributeArrayI attrB;
@@ -2339,23 +2144,13 @@ TestAttributeArray::testDelayedLoad()
 
             CPPUNIT_ASSERT(attrB.isOutOfCore());
 
-            OPENVDB_NO_DEPRECATION_WARNING_BEGIN
-
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
             AttributeHandle<int> handle(attrB);
 
             CPPUNIT_ASSERT(!attrB.isOutOfCore());
-            CPPUNIT_ASSERT(!attrB.isCompressed());
 
             for (unsigned i = 0; i < unsigned(count); ++i) {
                 CPPUNIT_ASSERT_EQUAL(attrA.get(i), handle.get(i));
             }
-
-            AttributeHandle<int> handle2(attrB, /*preserveCompression=*/false);
-            CPPUNIT_ASSERT(!attrB.isCompressed());
-
-            OPENVDB_NO_DEPRECATION_WARNING_END
         }
 #endif
 
@@ -2385,10 +2180,7 @@ TestAttributeArray::testDelayedLoad()
             fileout.close();
         }
 
-        // abuse File being a friend of MappedFile to get around the private constructor
-
-        proxy = new ProxyMappedFile(filename);
-        mappedFile.reset(reinterpret_cast<io::MappedFile*>(proxy));
+        mappedFile = TestMappedFile::create(filename);
 
         // read in using delayed load and check metadata fail due to serialization flags
         {
@@ -2519,13 +2311,14 @@ template <typename AttrT>
 void sum(const Name& prefix, const AttrT& attr)
 {
     ProfileTimer timer(prefix + ": sum");
-    typename AttrT::ValueType sum = 0;
+    using ValueType = typename AttrT::ValueType;
+    ValueType sum = 0;
     const Index size = attr.size();
     for (Index i = 0; i < size; i++) {
         sum += attr.getUnsafe(i);
     }
     // prevent compiler optimisations removing computation
-    CPPUNIT_ASSERT(sum);
+    CPPUNIT_ASSERT(sum!=ValueType());
 }
 
 template <typename CodecT, typename AttrT>
@@ -2539,7 +2332,7 @@ void sumH(const Name& prefix, const AttrT& attr)
         sum += handle.get(i);
     }
     // prevent compiler optimisations removing computation
-    CPPUNIT_ASSERT(sum);
+    CPPUNIT_ASSERT(sum!=ValueType());
 }
 
 } // namespace profile
@@ -2585,7 +2378,7 @@ TestAttributeArray::testProfile()
                 sum += float(values[i]);
             }
             // to prevent optimisation clean up
-            CPPUNIT_ASSERT(sum);
+            CPPUNIT_ASSERT(sum!=0.0f);
         }
     }
 
@@ -2658,7 +2451,3 @@ TestAttributeArray::testProfile()
         profile::sumH<FixedPointCodec<true>>("AttributeHandle<float, fp8, Codec>", attr);
     }
 }
-
-// Copyright (c) 2012-2019 DreamWorks Animation LLC
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )

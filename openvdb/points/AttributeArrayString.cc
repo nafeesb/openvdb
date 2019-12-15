@@ -1,32 +1,5 @@
-///////////////////////////////////////////////////////////////////////////
-//
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-//
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-//
-// Redistributions of source code must retain the above copyright
-// and license notice and the following restrictions and disclaimer.
-//
-// *     Neither the name of DreamWorks Animation nor the names of
-// its contributors may be used to endorse or promote products derived
-// from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-// LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
-//
-///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the OpenVDB Project
+// SPDX-License-Identifier: MPL-2.0
 
 /// @file points/AttributeArrayString.cc
 
@@ -35,7 +8,9 @@
 #include <openvdb/Metadata.h>
 #include <openvdb/MetaMap.h>
 
-#include <sstream>
+#include <tbb/parallel_sort.h>
+
+#include <string>
 
 namespace openvdb {
 OPENVDB_USE_VERSION_NAMESPACE
@@ -45,7 +20,7 @@ namespace points {
 
 namespace {
 
-    bool isStringMeta(const Name& key, const Metadata::Ptr& meta)
+    bool isStringMeta(const Name& key, const Metadata::ConstPtr& meta)
     {
         // ensure the metadata is StringMetadata
         if (meta->typeName() != "string")           return false;
@@ -57,21 +32,14 @@ namespace {
 
     Name getStringKey(const StringIndexType index)
     {
-        std::stringstream ss;
-        ss << "string:" << (index - 1);
-        return ss.str();
+        return "string:" + std::to_string(index - 1);
     }
 
     StringIndexType getStringIndex(const Name& key)
     {
-        Name indexStr = key.substr(7, key.size() - 7);
-
+        const Name indexStr = key.substr(7, key.size() - 7);
         // extract the index as an unsigned integer
-        std::istringstream indexSS(indexStr);
-        Index index;
-        indexSS >> index;
-
-        return (index + 1);
+        return static_cast<StringIndexType>(std::stoul(indexStr)) + 1;
     }
 
 } // namespace
@@ -85,6 +53,8 @@ namespace {
 
 StringMetaInserter::StringMetaInserter(MetaMap& metadata)
     : mMetadata(metadata)
+    , mIdBlocks()
+    , mValues()
 {
     // populate the cache
     resetCache();
@@ -93,54 +63,113 @@ StringMetaInserter::StringMetaInserter(MetaMap& metadata)
 
 void StringMetaInserter::insert(const Name& name)
 {
-    // name already exists, so do nothing
+    using IterT = std::vector<std::pair<Index, Index>>::iterator;
 
-    if (std::binary_search(mValues.begin(), mValues.end(), name))  return;
+    // if name already exists, do nothing
 
-    // find first unused index in the cache
+    if (mValues.count(name))  return;
+
+    // look through the id blocks for the next available index
 
     Index index = 1;
-    for (const Index& idx : mIndices) {
-        if (idx != index)   break;
-        ++index;
+    IterT iter = mIdBlocks.begin();
+    for (; iter != mIdBlocks.end(); ++iter) {
+        const Index start = iter->first;
+        const Index end = start + iter->second;
+
+        if (index < start || index >= end) break;
+        index = end;
     }
 
-    // now insert into metadata
+    // index now holds the next valid index. if it's 1 (the beginning
+    // iterator) no initial block exists - add it
+
+    IterT block;
+    if (iter == mIdBlocks.begin()) {
+        block = mIdBlocks.insert(iter, {1, 1});
+        iter = std::next(block);
+    }
+    else {
+        // accumulate the id block size where the next index is going
+        block = std::prev(iter);
+        block->second += 1;
+    }
+
+    // see if this block and the next block can be compacted
+
+    if (iter != mIdBlocks.end() &&
+        block->second + 1 == iter->first) {
+        block->second += iter->second;
+        mIdBlocks.erase(iter);
+    }
+
+    // insert into metadata
 
     const Name key = getStringKey(index);
     mMetadata.insertMeta(key, StringMetadata(name));
 
-    // finally update the caches (insertion sort)
+    // update the cache
 
-    mIndices.insert(std::upper_bound(mIndices.begin(), mIndices.end(), index), index);
-    mValues.insert(std::upper_bound(mValues.begin(), mValues.end(), name), name);
+    mValues.emplace(name);
 }
 
 
 void StringMetaInserter::resetCache()
 {
-    mIndices.clear();
     mValues.clear();
+    mIdBlocks.clear();
+
+    std::vector<Index> stringIndices;
 
     for (auto it = mMetadata.beginMeta(), itEnd = mMetadata.endMeta(); it != itEnd; ++it) {
         const Name& key = it->first;
-        const Metadata::Ptr meta = it->second;
+        const Metadata::ConstPtr meta = it->second;
 
         // ensure the metadata is StringMetadata and key starts "string:"
         if (!isStringMeta(key, meta))   continue;
 
-        // extract index and add to cache
-        Index index = getStringIndex(key);
-        mIndices.push_back(index);
+        // extract index
+        stringIndices.emplace_back(getStringIndex(key));
 
         // extract value from metadata and add to cache
-        StringMetadata* stringMeta = static_cast<StringMetadata*>(meta.get());
+        const StringMetadata* stringMeta = static_cast<const StringMetadata*>(meta.get());
         assert(stringMeta);
-        mValues.push_back(stringMeta->value());
+        mValues.insert(stringMeta->value());
     }
 
-    std::sort(mIndices.begin(), mIndices.end());
-    std::sort(mValues.begin(), mValues.end());
+    if (stringIndices.empty()) return;
+
+    tbb::parallel_sort(stringIndices.begin(), stringIndices.end());
+
+    // bucket string indices
+
+    Index key = stringIndices.front();
+    Index size = 0;
+
+    // For each id, see if it's adjacent id is sequentially increasing and continue to
+    // track how many are until we find a value that isn't. Store the start and length
+    // of each of these blocks. For example, the following container could be created
+    // consisting of 3 elements:
+    //   key  ->  size
+    //   -------------
+    //   7    ->  1000  (values 7->1007)
+    //   1020 ->  5     (values 1020->1025)
+    //   2013 ->  30    (values 2013->2043)
+    // Note that the end value is exclusive (values 1007, 1025 and 2043 do not exist
+    // given the above example)
+
+    for (const Index id : stringIndices) {
+        if (key + size != id) {
+            assert(size > 0);
+            mIdBlocks.emplace_back(key, size);
+            size = 0;
+            key = id;
+        }
+        ++size;
+    }
+
+    // add the last block
+    mIdBlocks.emplace_back(key, size);
 }
 
 
@@ -199,7 +228,6 @@ void StringAttributeHandle::get(Name& name, Index n, Index m) const
 
     name = meta->value();
 }
-
 
 const AttributeArray& StringAttributeHandle::array() const
 {
@@ -315,7 +343,7 @@ bool StringAttributeWriteHandle::contains(const Name& name) const
 }
 
 
-Index StringAttributeWriteHandle::getIndex(const Name& name)
+Index StringAttributeWriteHandle::getIndex(const Name& name) const
 {
     // zero used for an empty string
     if (name.empty())   return Index(0);
@@ -336,7 +364,3 @@ Index StringAttributeWriteHandle::getIndex(const Name& name)
 } // namespace points
 } // namespace OPENVDB_VERSION_NAME
 } // namespace openvdb
-
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
